@@ -84,7 +84,7 @@ OpenCode is pinned to 2.2.5 (`RuntimeController.OC_VERSION`), the version the cl
 ./gradlew :app:assembleDebug
 ```
 
-JDK 21 is required. Release builds are made by GitHub Actions on every push to `main` (`.github/workflows/release.yml`). The version is the run number: run #5 publishes `v0.0.1-beta-5` (versionName `0.0.1 beta-5`, versionCode 5). Set the repository variable `VERSION_OFFSET` to shift the number. The workflow runs the unit tests, builds, signs with `keystore/release.jks` (see `keystore/README.md`), checks the signature and publishes the APK with a `.sha256` file.
+JDK 21 is required. Release builds are made by GitHub Actions on every push to `main` (`.github/workflows/release.yml`). The version lives in `gradle.properties` (`appVersionName` / `appVersionCode`); CI appends the build number to versionName and uses the run number as versionCode, so run #36 publishes `v0.0.2-beta-1-build36` (versionName `0.0.2 beta-1 build 36`). Set the repository variable `VERSION_OFFSET` to shift the build number. The workflow runs the unit tests, builds, signs with `keystore/release.jks` (see `keystore/README.md`), checks the signature and publishes the APK with a `.sha256` file.
 
 **Private repo and the in-app updater.** The updater reads releases of `updateRepo` (`gradle.properties`) through the public GitHub API, so it gets HTTP 404 if that repo is private. Either keep a separate public repo that only holds releases (set the repository variable `RELEASE_REPO`, the secret `RELEASE_TOKEN` and `updateRepo`), or make the releases repo public.
 

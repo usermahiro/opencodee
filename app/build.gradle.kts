@@ -23,9 +23,9 @@ android {
         // and with targetSdk >= 29 Android forbids exec from app_data_file (same as Termux).
         // The APK is distributed as a file, not through Play.
         targetSdk = 28
-        // CI passes -PappVersionCode / -PappVersionName (from the workflow run number); local builds use the defaults
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 5
-        versionName = (project.findProperty("appVersionName") as String?) ?: "0.0.1 beta-5"
+        // gradle.properties holds the version; CI overrides both with -P flags (run number).
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 36
+        versionName = (project.findProperty("appVersionName") as String?) ?: "0.0.2 beta-1"
         ndk { abiFilters += "arm64-v8a" }
         // Repo whose GitHub releases the in-app updater checks. Set `updateRepo=owner/name` in gradle.properties.
         val updateRepo = (project.findProperty("updateRepo") as String?) ?: "usermahiro/opencodee"

@@ -46,6 +46,7 @@ class RuntimeController(
     @Volatile private var process: Process? = null
     @Volatile private var stopRequested = false
     @Volatile private var installing = false
+    @Volatile private var resetting = false
 
     fun logLine(s: String) {
         android.util.Log.w("CeloOC", s)
@@ -55,7 +56,7 @@ class RuntimeController(
     // ---------- install ----------
 
     suspend fun install() = withContext(Dispatchers.IO) {
-        if (installing) return@withContext
+        if (installing || resetting) return@withContext
         installing = true
         try {
             step("Preparing", null)
@@ -324,6 +325,7 @@ class RuntimeController(
 
     /** Start the server through a foreground service, otherwise Android kills the process in the background. */
     fun startServer() {
+        if (resetting) return
         val s = state.value
         if (s is RuntimeState.NotInstalled || s is RuntimeState.Installing || s is RuntimeState.InstallFailed) return
         userStopped = false
@@ -360,12 +362,25 @@ class RuntimeController(
     }
 
     fun resetRuntime() {
-        Vault.save()
-        stopServer()
-        if (prefs.rootMode) Root.run("rm -rf ${Root.quote(paths.rootfs.path)} ${Root.quote(paths.downloads.path)}", 300)
-        paths.rootfs.deleteRecursively()
-        paths.downloads.deleteRecursively()
-        prefs.runtimeReady = false
-        state.value = RuntimeState.NotInstalled
+        if (resetting) return
+        resetting = true
+        // Deleting the environment is hundreds of megabytes and thousands of files: not on the main thread.
+        Thread {
+            try {
+                stopServer()
+                var waited = 0
+                while (waited < 10_000 && (serverAlive || portBusy())) { Thread.sleep(200); waited += 200 }
+                killLeftoverServer()
+                // The chat database is only consistent once the server has stopped writing.
+                Vault.save()
+                if (prefs.rootMode) Root.run("rm -rf ${Root.quote(paths.rootfs.path)} ${Root.quote(paths.downloads.path)}", 300)
+                paths.rootfs.deleteRecursively()
+                paths.downloads.deleteRecursively()
+                prefs.runtimeReady = false
+            } finally {
+                resetting = false
+                state.value = RuntimeState.NotInstalled
+            }
+        }.apply { isDaemon = true }.start()
     }
 }
