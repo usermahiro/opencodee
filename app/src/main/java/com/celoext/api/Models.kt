@@ -263,6 +263,24 @@ fun parseSession(o: JsonObject): Session {
     )
 }
 
+/**
+ * Prices used to be a flat object. OpenCode 2.2.5 sends an array of tiers with the cache prices
+ * nested under "cache". The cost hint under the composer expects the flat shape.
+ */
+private fun normalizeCost(el: JsonElement?): JsonObject? {
+    val base = when (el) {
+        is JsonArray -> el.firstOrNull() as? JsonObject
+        is JsonObject -> el
+        else -> null
+    } ?: return null
+    val out = base.toMutableMap()
+    base.obj("cache")?.let { cache ->
+        if ("cache_read" !in out) cache.dbl("read")?.let { out["cache_read"] = JsonPrimitive(it) }
+        if ("cache_write" !in out) cache.dbl("write")?.let { out["cache_write"] = JsonPrimitive(it) }
+    }
+    return JsonObject(out)
+}
+
 fun parseModelInfo(o: JsonObject): ModelInfo {
     val id = o.str("id") ?: ""
     val name = o.str("name") ?: id
@@ -328,7 +346,7 @@ fun parseModelInfo(o: JsonObject): ModelInfo {
         status = status,
         capabilities = caps,
         limit = limit,
-        cost = o.obj("cost"),
+        cost = normalizeCost(o["cost"]),
         variants = variantsObj,
         release_date = releaseDate,
     )
