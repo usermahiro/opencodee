@@ -142,6 +142,15 @@ fun ChatScreen(id: String, nav: Nav, onMenu: () -> Unit) {
     LaunchedEffect(chat.messages.isNotEmpty()) {
         if (chat.messages.isNotEmpty()) listState.scrollToItem(chat.messages.size)
     }
+    // Sending always brings the conversation back to the bottom. Otherwise a message sent while
+    // the user was reading history stays half-hidden under the composer until the next scroll.
+    val freshSend = chat.messages.lastOrNull()?.takeIf { it.id.startsWith(com.celoext.data.LOCAL_PREFIX) }?.id
+    LaunchedEffect(freshSend) {
+        if (freshSend != null) {
+            stick = true
+            listState.scrollToItem(chat.messages.size)
+        }
+    }
 
     fun imageList(): List<String> = chat.messages.flatMap { m ->
         m.parts.flatMap { p ->
@@ -311,7 +320,14 @@ fun ChatScreen(id: String, nav: Nav, onMenu: () -> Unit) {
                             state.clear(); stick = true; editing = null; sendingNow = true
                             scope.launch {
                                 runCatching { if (e != null) hub.edit(ctx, id, e, text, atts) else hub.send(ctx, id, text, atts) }
-                                    .onFailure { hub.toasts.tryEmit(it.message ?: "Send failed") }
+                                    .onFailure {
+                                        // A failed send must not eat the text: put it back for a retry.
+                                        if (state.text.isBlank() && state.attachments.isEmpty()) {
+                                            state.text = text
+                                            state.attachments.addAll(atts)
+                                        }
+                                        hub.toasts.tryEmit(it.message ?: "Send failed")
+                                    }
                                 sendingNow = false
                             }
                         },

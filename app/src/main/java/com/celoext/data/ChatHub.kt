@@ -13,12 +13,17 @@ import com.celoext.api.parsePermission
 import com.celoext.api.parseQuestion
 import com.celoext.api.parseSession
 import com.celoext.api.str
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -108,22 +113,34 @@ class ChatHub(private val api: OpenCodeApi, private val events: EventHub, privat
 
     fun forget(id: String) { chats.remove(id) }
 
+    private class Extras(val perms: List<PermissionReq>, val questions: List<QuestionReq>, val statuses: Map<String, String>)
+
     suspend fun refreshSessions() {
         try {
-            val list = api.listSessions(limit = com.celoext.api.OpenCodeApi.MAX_LIMIT)
+            // Parsing the session list belongs off the UI thread too.
+            val list = withContext(Dispatchers.IO) { api.listSessions(limit = com.celoext.api.OpenCodeApi.MAX_LIMIT) }
             all.value = list.associateBy { it.id }
             publish()
             loaded.value = true
-            // fetch what's waiting for an answer in every project that has sessions
+            // Fetch what's waiting for an answer in every project that has sessions. All projects at
+            // once: serially this was up to 36 round-trips, seconds on a remote device.
             val dirs = list.map { it.directory }.distinct().take(12)
-            val perms = ArrayList<PermissionReq>()
-            val qs = ArrayList<QuestionReq>()
-            val st = HashMap<String, String>()
-            for (d in dirs) {
-                runCatching { perms += api.permissions(d) }
-                runCatching { qs += api.questions(d) }
-                runCatching { api.statuses(d).forEach { (k, v) -> v.str("type")?.takeIf { it != "idle" }?.let { t -> st[k] = t } } }
+            val found = coroutineScope {
+                dirs.map { d ->
+                    async(Dispatchers.IO) {
+                        val perms = runCatching { api.permissions(d) }.getOrDefault(emptyList())
+                        val qs = runCatching { api.questions(d) }.getOrDefault(emptyList())
+                        val st = HashMap<String, String>()
+                        runCatching { api.statuses(d) }.getOrDefault(emptyMap()).forEach { (k, v) ->
+                            v.str("type")?.takeIf { it != "idle" }?.let { t -> st[k] = t }
+                        }
+                        Extras(perms, qs, st)
+                    }
+                }.awaitAll()
             }
+            val perms = found.flatMap { it.perms }
+            val qs = found.flatMap { it.questions }
+            val st = HashMap<String, String>().apply { found.forEach { putAll(it.statuses) } }
             val (auto, manual) = perms.partition { autoAllows(it.permission) }
             permissions.value = manual
             auto.forEach { r -> Graph.scope.launch { runCatching { api.replyPermission(r.id, session(r.sessionID)?.directory, "once", r.sessionID) } } }

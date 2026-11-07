@@ -233,20 +233,7 @@ class OpenCodeApi(private val prefs: Prefs) {
     suspend fun messages(id: String, directory: String?, limit: Int = MAX_LIMIT): List<MessageWithParts> {
         val res = call("GET", "/api/session/$id/message", loc(directory) + mapOf("limit" to pageLimit(limit).toString()))
             ?: JsonArray(emptyList())
-        return parseMessages(res, defaultSessionID = id)
-    }
-
-    suspend fun todos(id: String, directory: String?): JsonArray {
-        val msgs = runCatching { messages(id, directory, limit = 100) }.getOrDefault(emptyList())
-        for (m in msgs.asReversed()) {
-            for (p in m.parts.asReversed()) {
-                if (p.raw.str("tool") == "todowrite") {
-                    val arr = p.raw.obj("state")?.obj("metadata")?.arr("todos")
-                    if (arr != null) return arr
-                }
-            }
-        }
-        return JsonArray(emptyList())
+        return inChatOrder(parseMessages(res, defaultSessionID = id))
     }
 
     suspend fun diff(id: String, directory: String?): JsonArray {
