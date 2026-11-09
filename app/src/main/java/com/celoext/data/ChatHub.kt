@@ -290,7 +290,7 @@ class ChatHub(private val api: OpenCodeApi, private val events: EventHub, privat
         // fresh memory goes into the instructions before the request (the agent may have changed it in the last reply)
         if (prefs.memoryEnabled && !Graph.devices.isRemote) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Memory.sync() }
         try {
-            val attParts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { atts.map { Attachments.toPart(ctx, it) } }
+            val attParts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { atts.map { Attachments.toPart(ctx, it, dir) } }
             val parts = buildJsonArray {
                 if (text.isNotBlank() || (keepParts.isEmpty() && attParts.isEmpty())) add(buildJsonObject { put("type", "text"); put("text", text) })
                 keepParts.forEach { add(it) }

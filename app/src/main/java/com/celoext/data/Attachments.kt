@@ -44,7 +44,7 @@ object Attachments {
      * anything big or non-inline goes onto the environment's disk and the agent is told where.
      * Never reads a whole file into RAM just to copy it to disk.
      */
-    fun toPart(ctx: Context, a: Attachment): JsonObject {
+    fun toPart(ctx: Context, a: Attachment, sessionDir: String? = null): JsonObject {
         val m = com.celoext.Graph.catalog.model(com.celoext.Graph.prefs.providerId, com.celoext.Graph.prefs.modelId)
         val size = sizeOf(ctx, a.uri)
         val wantInline = (a.isImage && m?.supportsImages != false) || (a.mime == "application/pdf" && m?.capabilities?.input?.pdf == true)
@@ -65,10 +65,25 @@ object Attachments {
         var i = 2
         while (f.exists()) { f = java.io.File(dir, safeName(a.name).let { n -> n.substringBeforeLast('.', n) + "-$i" + (if ('.' in n) "." + n.substringAfterLast('.') else "") }); i++ }
         val written = copyUriToFile(ctx, a.uri, f)
+        if (!f.isFile || f.length() != written) throw java.io.IOException("Could not save ${a.name}")
+        // Root cause of ENOENT for large uploads: some agent cwd values don't resolve /root/uploads
+        // the same way (proot --root-id + cwd=/root/work). Mirror into the session dir too, so a
+        // relative or cwd-based open still finds it.
+        var mirror = ""
+        if (!sessionDir.isNullOrBlank()) {
+            val mirrorDir = com.celoext.Graph.paths.host("$sessionDir/uploads").apply { mkdirs() }
+            val mf = java.io.File(mirrorDir, f.name)
+            if (mf.absolutePath != f.absolutePath) {
+                runCatching { f.copyTo(mf, overwrite = true) }
+                if (mf.isFile) mirror = "${sessionDir.trimEnd('/')}/uploads/${mf.name}"
+            }
+        }
         val guest = "$UPLOADS/${f.name}"
         return synthetic(
             "<attached-file path=\"$guest\" name=\"${a.name}\" mime=\"${a.mime}\" size=\"$written\"/>\n" +
-                "The user attached the file ${a.name} (${a.mime}, ${human(written)}). It is saved at $guest — open it with your tools when needed.",
+                "The user attached the file ${a.name} (${a.mime}, ${human(written)}). It is saved at $guest" +
+                (if (mirror.isNotEmpty()) " (also at $mirror)" else "") +
+                " — open it with your tools when needed.",
         )
     }
 
