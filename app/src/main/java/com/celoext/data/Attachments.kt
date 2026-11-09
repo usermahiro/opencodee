@@ -64,17 +64,29 @@ object Attachments {
         var f = java.io.File(dir, safeName(a.name))
         var i = 2
         while (f.exists()) { f = java.io.File(dir, safeName(a.name).let { n -> n.substringBeforeLast('.', n) + "-$i" + (if ('.' in n) "." + n.substringAfterLast('.') else "") }); i++ }
-        val written = copyUriToFile(ctx, a.uri, f)
-        if (!f.isFile || f.length() != written) throw java.io.IOException("Could not save ${a.name}")
+        // Fail with a clear message instead of a broken half-written copy: large attachments are
+        // saved next to a ~1 GB rootfs and the mirror doubles what a big file needs.
+        val need = (size?.let { it + it / 4 } ?: 0L) + 8_000_000L
+        if (need > 0) {
+            val free = runCatching { android.os.StatFs(dir.path).availableBytes }.getOrDefault(Long.MAX_VALUE)
+            if (free < need) throw java.io.IOException("Not enough free space for ${a.name}: about ${human(need)} is needed, ${human(free)} is free")
+        }
+        val written = try { copyUriToFile(ctx, a.uri, f) } catch (e: Exception) {
+            runCatching { f.delete() }
+            throw java.io.IOException("Could not save ${a.name}: ${e.message ?: e.javaClass.simpleName}")
+        }
+        if (!f.isFile || f.length() != written) { runCatching { f.delete() }; throw java.io.IOException("Could not save ${a.name}") }
         // Root cause of ENOENT for large uploads: some agent cwd values don't resolve /root/uploads
         // the same way (proot --root-id + cwd=/root/work). Mirror into the session dir too, so a
-        // relative or cwd-based open still finds it.
+        // relative or cwd-based open still finds it. A hard link costs no extra space (both paths
+        // are inside filesDir); only small files get a real second copy.
         var mirror = ""
         if (!sessionDir.isNullOrBlank()) {
             val mirrorDir = com.celoext.Graph.paths.host("$sessionDir/uploads").apply { mkdirs() }
             val mf = java.io.File(mirrorDir, f.name)
             if (mf.absolutePath != f.absolutePath) {
-                runCatching { f.copyTo(mf, overwrite = true) }
+                val linked = runCatching { java.nio.file.Files.createLink(mf.toPath(), f.toPath()) }.isSuccess && mf.isFile
+                if (!linked && written <= 64_000_000L) runCatching { f.copyTo(mf, overwrite = true) }
                 if (mf.isFile) mirror = "${sessionDir.trimEnd('/')}/uploads/${mf.name}"
             }
         }
