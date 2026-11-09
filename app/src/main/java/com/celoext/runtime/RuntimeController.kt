@@ -58,6 +58,12 @@ class RuntimeController(
         if (installing) return@withContext
         installing = true
         try {
+            // Rootfs (~800 MB) + OpenCode (~240 MB) + downloads: fail early with a clear message instead of ENOSPC.
+            val root = paths.rootfs.parentFile ?: paths.rootfs
+            val free = runCatching { android.os.StatFs(root.path).availableBytes }.getOrDefault(Long.MAX_VALUE)
+            if (free < 1_500_000_000L) {
+                error("Not enough free space: about 1.5 GB is needed, ${free / (1024 * 1024)} MB is free")
+            }
             step("Preparing", null)
             paths.libDir.mkdirs()
             File(paths.nativeDir, "libtalloc.so").copyTo(File(paths.libDir, "libtalloc.so.2"), overwrite = true)

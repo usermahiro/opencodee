@@ -36,34 +36,56 @@ object Downloader {
             onProgress(dest.length(), dest.length()); return
         }
         val part = File(dest.path + ".part")
-        client.newCall(Request.Builder().url(url).header("User-Agent", "opencode-mobile").build()).execute().use { r ->
+        // Resume what an earlier attempt left behind: these files are tens of megabytes and phone networks drop.
+        val offset = if (part.isFile) part.length() else 0L
+        val builder = Request.Builder().url(url).header("User-Agent", "opencode-mobile")
+        if (offset > 0) builder.header("Range", "bytes=$offset-")
+        client.newCall(builder.build()).execute().use { r ->
+            if (r.code == 416) { // the leftover is longer than the remote file: start over
+                part.delete()
+                throw java.io.IOException("Download $url: HTTP 416, restarting from zero")
+            }
             if (r.code >= 500) throw Transient("Download $url: HTTP ${r.code}")
             if (!r.isSuccessful) error("Download $url: HTTP ${r.code}")
+
             val body = r.body
-            val total = body.contentLength()
-            val md = MessageDigest.getInstance("SHA-256")
-            var done = 0L
-            var last = 0L
-            part.outputStream().buffered(1 shl 16).use { out ->
+            val resumed = r.code == 206 && offset > 0
+            if (resumed) {
+                val start = r.header("Content-Range")?.substringAfter("bytes ")?.substringBefore('-')?.toLongOrNull()
+                if (start != offset) {
+                    part.delete()
+                    throw java.io.IOException("Download $url: server resumed at $start, expected $offset")
+                }
+            }
+            val from = if (resumed) offset else 0L
+            // 206 reports the remaining length in the body: the total comes from Content-Range.
+            val total = if (resumed) {
+                r.header("Content-Range")?.substringAfter('/')?.toLongOrNull() ?: (from + body.contentLength())
+            } else body.contentLength()
+            onProgress(from, total)
+            var done = from
+            var last = from
+            java.io.FileOutputStream(part, resumed).buffered(1 shl 16).use { out ->
                 val buf = ByteArray(1 shl 16)
                 val src = body.byteStream()
                 while (true) {
                     val n = src.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)
-                    md.update(buf, 0, n)
                     done += n
                     if (done - last > 128 * 1024) { last = done; onProgress(done, total) }
                 }
             }
             if (total > 0 && done != total) {
-                part.delete()
-                error("Download of ${dest.name} was cut short ($done of $total bytes)")
+                // Keep the partial file: the next attempt asks for the rest.
+                throw java.io.IOException("Download of ${dest.name} was cut short ($done of $total bytes)")
             }
-            val got = md.digest().joinToString("") { "%02x".format(it) }
-            if (sha256 != null && !got.equals(sha256, ignoreCase = true)) {
-                part.delete()
-                error("Checksum mismatch for ${dest.name}: $got")
+            if (sha256 != null) {
+                val got = sha256Of(part)
+                if (!got.equals(sha256, ignoreCase = true)) {
+                    part.delete()
+                    error("Checksum mismatch for ${dest.name}: $got")
+                }
             }
             dest.delete()
             if (!part.renameTo(dest)) error("Could not rename ${part.name}")
