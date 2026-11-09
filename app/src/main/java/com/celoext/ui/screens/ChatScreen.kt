@@ -83,6 +83,7 @@ fun ChatScreen(id: String, nav: Nav, onMenu: () -> Unit) {
     val questions by hub.questions.collectAsState()
     val session = sessions.firstOrNull { it.id == id } ?: hub.session(id)
     val incognito = hub.isIncognito(id)
+    var sendingNow by remember { mutableStateOf(false) }
     val busy = statuses[id] == "busy" || statuses[id] == "retry" || sendingNow
     val state = rememberComposerState()
     LaunchedEffect(id) { Graph.chats.drafts.remove(id)?.let { state.text = it } }
@@ -98,7 +99,6 @@ fun ChatScreen(id: String, nav: Nav, onMenu: () -> Unit) {
     val pinned = Graph.prefs.pinnedSet()
     var stick by remember { mutableStateOf(true) }
     var voice by remember { mutableStateOf(false) }
-    var sendingNow by remember { mutableStateOf(false) }
 
     LaunchedEffect(id) {
         if (chat.directory == null) chat.directory = hub.session(id)?.directory
