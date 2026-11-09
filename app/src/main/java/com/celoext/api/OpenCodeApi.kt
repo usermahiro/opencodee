@@ -502,11 +502,10 @@ class OpenCodeApi(private val prefs: Prefs) {
 
     private suspend fun configDocument(): Pair<String, JsonObject> {
         val res = call("GET", "/api/config") as? JsonArray ?: JsonArray(emptyList())
-        val doc = res.firstOrNull { (it as? JsonObject)?.str("type") == "document" } as? JsonObject
-            ?: res.firstOrNull() as? JsonObject
-        val path = doc?.str("path") ?: "/root/.config/opencode/opencode.json"
+        val entries = res.mapNotNull { it as? JsonObject }
+        val doc = entries.firstOrNull { it.str("type") == "document" }
         val info = doc?.obj("info") ?: JsonObject(emptyMap())
-        return path to info
+        return configFilePath(entries) to info
     }
 
     suspend fun config(): JsonObject {
@@ -653,4 +652,16 @@ class OpenCodeApi(private val prefs: Prefs) {
     }
 
     private fun JsonArray?.orEmpty() = this ?: JsonArray(emptyList())
+}
+
+/**
+ * The file a settings change has to write. `/api/config` lists the config sources; a fresh install
+ * has only the directory and no document yet. Writing to the directory itself fails with HTTP 500,
+ * so the document has to be created inside it.
+ */
+internal fun configFilePath(entries: List<JsonObject>): String {
+    entries.firstOrNull { it.str("type") == "document" }?.str("path")?.takeIf { it.isNotBlank() }?.let { return it }
+    val dir = entries.firstOrNull { it.str("type") == "directory" }?.str("path")?.takeIf { it.isNotBlank() }
+        ?: "/root/.config/opencode"
+    return java.io.File(dir, "opencode.json").path
 }
