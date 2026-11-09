@@ -414,6 +414,14 @@ fun parseQuestion(o: JsonObject): QuestionReq {
     return QuestionReq(id = id, sessionID = sessionID, questions = questions)
 }
 
+/**
+ * The message endpoint returns the latest page newest first. Every caller in the app expects
+ * oldest first: the chat draws top to bottom, and interrupted-task detection reads the last
+ * item as the newest one.
+ */
+internal fun inChatOrder(list: List<MessageWithParts>): List<MessageWithParts> =
+    list.sortedWith(compareBy({ it.info.time.created }, { it.info.id }))
+
 fun parseMessages(el: JsonElement, defaultSessionID: String = ""): List<MessageWithParts> {
     val arr = when (el) {
         is JsonArray -> el
