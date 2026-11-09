@@ -64,13 +64,21 @@ object Vault {
                 if (!v.isFile) return
                 // Server creates placeholder auth.json/config on first start. Copying only when target is
                 // missing leaves that placeholder and providers look "gone" until user re-enters keys.
-                if (!t.isFile || v.lastModified() >= t.lastModified()) { t.parentFile?.mkdirs(); v.copyTo(t, overwrite = true) }
+                val tEmpty = !t.isFile || t.length() <= 2 || runCatching { JSONObject(t.readText()).length() == 0 }.getOrDefault(false)
+                val vUseful = v.length() > 2 && runCatching { JSONObject(v.readText()).length() > 0 }.getOrDefault(false)
+                if (!t.isFile || v.lastModified() >= t.lastModified() || (tEmpty && vUseful) || !tEmpty && !vUseful) { t.parentFile?.mkdirs(); v.copyTo(t, overwrite = true) }
             }
-            back(AUTH); back(RULES); back(CONFIG); back(CONFIG_JSON)
+            fun backText(rel: String) {
+                val v = File(root, rel); val t = File(rf, rel)
+                if (!v.isFile) return
+                if (!t.isFile || v.lastModified() >= t.lastModified() || t.length() == 0L) { t.parentFile?.mkdirs(); v.copyTo(t, overwrite = true) }
+            }
+            back(AUTH)
+            backText(RULES); backText(CONFIG); backText(CONFIG_JSON)
             // DB only when target missing: copying over a live DB could corrupt chats.
             fun backDb(rel: String) { val v = File(root, rel); val t = File(rf, rel); if (v.isFile && !t.isFile) { t.parentFile?.mkdirs(); v.copyTo(t) } }
             backDb(DB); backDb("$DB-wal"); backDb("$DB-shm")
-            File(root, MEMORY).listFiles()?.forEach { back("$MEMORY/${it.name}") }
+            File(root, MEMORY).listFiles()?.forEach { backText("$MEMORY/${it.name}") }
         }
     }
 
