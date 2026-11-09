@@ -55,12 +55,21 @@ object Vault {
         }
     }
 
-    /** From the vault to the rootfs: only what's missing there (after reinstalling the environment). */
+    /** From the vault to the rootfs: overwrite stale/placeholder files so keys come back after reinstall. */
     fun restore() {
         runCatching {
             val rf = Graph.paths.rootfs
-            fun back(rel: String) { val v = File(root, rel); val t = File(rf, rel); if (v.isFile && !t.isFile) { t.parentFile?.mkdirs(); v.copyTo(t) } }
-            back(AUTH); back(DB); back("$DB-wal"); back("$DB-shm"); back(RULES); back(CONFIG); back(CONFIG_JSON)
+            fun back(rel: String) {
+                val v = File(root, rel); val t = File(rf, rel)
+                if (!v.isFile) return
+                // Server creates placeholder auth.json/config on first start. Copying only when target is
+                // missing leaves that placeholder and providers look "gone" until user re-enters keys.
+                if (!t.isFile || v.lastModified() >= t.lastModified()) { t.parentFile?.mkdirs(); v.copyTo(t, overwrite = true) }
+            }
+            back(AUTH); back(RULES); back(CONFIG); back(CONFIG_JSON)
+            // DB only when target missing: copying over a live DB could corrupt chats.
+            fun backDb(rel: String) { val v = File(root, rel); val t = File(rf, rel); if (v.isFile && !t.isFile) { t.parentFile?.mkdirs(); v.copyTo(t) } }
+            backDb(DB); backDb("$DB-wal"); backDb("$DB-shm")
             File(root, MEMORY).listFiles()?.forEach { back("$MEMORY/${it.name}") }
         }
     }
