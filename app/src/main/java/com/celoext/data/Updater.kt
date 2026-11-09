@@ -98,12 +98,21 @@ object Updater {
 
     private fun JsonObject.str(k: String) = this[k]?.jsonPrimitive?.content.orEmpty()
 
-    /** "v0.0.1-beta-3" vs "0.0.1 beta-2": numbers first, then the stage (alpha < beta < rc < release) and its number. */
+    /**
+     * "v0.0.2-beta-1-build36" vs "0.0.2 beta-1 build 35": numbers first, then the stage
+     * (alpha < beta < rc < release), its number, and the build number last, so two
+     * releases with the same version still compare in the right order.
+     */
     fun compare(a: String, b: String): Int {
         fun key(v: String): List<Int> {
-            val m = Regex("""(\d+)\.(\d+)(?:\.(\d+))?(?:[\s._-]*(alpha|beta|rc)[\s._-]*(\d+)?)?""", RegexOption.IGNORE_CASE).find(v) ?: return listOf(0, 0, 0, 0, 0)
+            val build = Regex("""build[\s._-]*(\d+)""", RegexOption.IGNORE_CASE).find(v)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val m = Regex("""(\d+)\.(\d+)(?:\.(\d+))?(?:[\s._-]*(alpha|beta|rc)[\s._-]*(\d+)?)?""", RegexOption.IGNORE_CASE).find(v)
+                ?: return listOf(0, 0, 0, 0, 0, build)
             val stage = when (m.groupValues[4].lowercase()) { "alpha" -> 0; "beta" -> 1; "rc" -> 2; else -> 3 }
-            return listOf(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toIntOrNull() ?: 0, stage, m.groupValues[5].toIntOrNull() ?: 0)
+            return listOf(
+                m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toIntOrNull() ?: 0,
+                stage, m.groupValues[5].toIntOrNull() ?: 0, build,
+            )
         }
         val ka = key(a); val kb = key(b)
         for (i in ka.indices) if (ka[i] != kb[i]) return ka[i].compareTo(kb[i])

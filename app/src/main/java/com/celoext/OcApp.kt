@@ -73,6 +73,6 @@ object Graph {
         Memory.sync()
         Vault.restore()
         Vault.reconcileAccount()
-        scope.launch(Dispatchers.IO) { while (true) { Vault.save(); Vault.reconcileAccount(); delay(30_000) } }
+        scope.launch(Dispatchers.IO) { while (true) { Vault.saveLight(); Vault.reconcileAccount(); delay(30_000) } }
     }
 }

@@ -28,13 +28,26 @@ object Vault {
 
     /** From the rootfs to the vault. An empty or broken auth.json doesn't overwrite a good copy. */
     fun save() {
+        saveLight()
+        runCatching {
+            val rf = Graph.paths.rootfs
+            // The chat database is SQLite: copy it only when the server is not writing (stop/reset/backup).
+            copyIfNewer(File(rf, DB), File(root, DB))
+            copyIfNewer(File(rf, "$DB-wal"), File(root, "$DB-wal"))
+            copyIfNewer(File(rf, "$DB-shm"), File(root, "$DB-shm"))
+        }
+    }
+
+    /**
+     * Auth, rules, config and memory only: small files that are safe to copy while the server runs.
+     * The 30-second background save uses this; copying the 12 MB database every half minute
+     * would wear the flash and drain the battery for no benefit.
+     */
+    fun saveLight() {
         runCatching {
             val rf = Graph.paths.rootfs
             val auth = File(rf, AUTH)
             if (auth.isFile && auth.length() > 2 && runCatching { JSONObject(auth.readText()).length() > 0 }.getOrDefault(false)) copyIfNewer(auth, File(root, AUTH))
-            copyIfNewer(File(rf, DB), File(root, DB))
-            copyIfNewer(File(rf, "$DB-wal"), File(root, "$DB-wal"))
-            copyIfNewer(File(rf, "$DB-shm"), File(root, "$DB-shm"))
             copyIfNewer(File(rf, RULES), File(root, RULES))
             copyIfNewer(File(rf, CONFIG), File(root, CONFIG))
             copyIfNewer(File(rf, CONFIG_JSON), File(root, CONFIG_JSON))
