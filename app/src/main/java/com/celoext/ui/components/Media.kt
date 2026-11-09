@@ -54,8 +54,14 @@ fun imageModel(url: String): Any =
 
 fun imageBytes(url: String): ByteArray? = runCatching {
     when {
-        url.startsWith("data:") -> Base64.decode(url.substringAfter("base64,"), Base64.DEFAULT)
-        url.startsWith("file://") -> Graph.paths.host(Uri.parse(url).path ?: "").readBytes()
+        url.startsWith("data:") -> {
+            val b64 = url.substringAfter("base64,")
+            if (b64.length > 14_000_000) null else Base64.decode(b64, Base64.DEFAULT)
+        }
+        url.startsWith("file://") -> {
+            val f = Graph.paths.host(Uri.parse(url).path ?: "")
+            if (!f.isFile || f.length() > 16_000_000) null else f.readBytes()
+        }
         else -> null
     }
 }.getOrNull()
@@ -118,8 +124,24 @@ fun ImageViewer(urls: List<String>, start: Int, onDismiss: () -> Unit) {
 
 private fun mimeOf(url: String) = if (url.startsWith("data:")) url.substringAfter("data:").substringBefore(';') else "image/png"
 
+private fun writeUrlTo(ctx: Context, url: String, out: java.io.OutputStream): Boolean =
+    when {
+        url.startsWith("data:") -> {
+            val b64 = url.substringAfter("base64,")
+            if (b64.length > 14_000_000) return false
+            out.write(Base64.decode(b64, Base64.DEFAULT))
+            true
+        }
+        url.startsWith("file://") -> {
+            val f = Graph.paths.host(Uri.parse(url).path ?: "")
+            if (!f.isFile || f.length() > 64_000_000) return false
+            f.inputStream().use { it.copyTo(out, 1 shl 16) }
+            true
+        }
+        else -> false
+    }
+
 private fun saveImage(ctx: Context, url: String) {
-    val bytes = imageBytes(url) ?: return
     val mime = mimeOf(url)
     val ext = mime.substringAfter('/').replace("jpeg", "jpg")
     val values = ContentValues().apply {
@@ -128,17 +150,16 @@ private fun saveImage(ctx: Context, url: String) {
         put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/OpenCode")
     }
     val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-    if (uri != null) {
-        ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+    if (uri != null && ctx.contentResolver.openOutputStream(uri)?.use { writeUrlTo(ctx, url, it) } == true) {
         Toast.makeText(ctx, "Saved to Pictures/OpenCode", Toast.LENGTH_SHORT).show()
     }
 }
 
 private fun shareImage(ctx: Context, url: String) {
-    val bytes = imageBytes(url) ?: return
     val ext = mimeOf(url).substringAfter('/').replace("jpeg", "jpg")
     val f = File(ctx.cacheDir, "camera").apply { mkdirs() }.let { File(it, "share-${System.currentTimeMillis()}.$ext") }
-    f.writeBytes(bytes)
+    val ok = f.outputStream().use { writeUrlTo(ctx, url, it) }
+    if (!ok) { f.delete(); return }
     val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", f)
     ctx.startActivity(
         Intent.createChooser(

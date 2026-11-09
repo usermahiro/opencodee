@@ -77,6 +77,11 @@ class Chat(val id: String, private val api: OpenCodeApi) {
     suspend fun load() {
         try {
             val list = api.messages(id, directory, com.celoext.api.OpenCodeApi.MAX_LIMIT)
+            if (list.isEmpty() && messages.isNotEmpty()) {
+                // Server warming / slow prompt enqueue often returns [] for a beat. Keep history on screen.
+                loadError = null
+                return
+            }
             val fresh = list.map { m -> ChatMessage(m.info.id, m.info).also { it.parts.addAll(m.parts) } }
             val locals = messages.filter { it.id.startsWith("zzzz-local-") }
             messages.clear()
@@ -88,7 +93,9 @@ class Chat(val id: String, private val api: OpenCodeApi) {
             loadError = null
             runCatching { api.todos(id, directory) }.getOrNull()?.let { todos = parseTodos(it) }
         } catch (e: Exception) {
-            loadError = e.message ?: "Could not load the chat"
+            // Keep whatever is already on screen. A transient load failure must not blank the chat.
+            if (messages.isEmpty()) loadError = e.message ?: "Could not load the chat"
+            else loadError = null
         } finally {
             loading = false
         }

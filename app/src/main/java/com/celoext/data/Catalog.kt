@@ -25,9 +25,16 @@ class Catalog(private val api: OpenCodeApi, private val prefs: Prefs, private va
     suspend fun refresh() {
         runCatching {
             val r = api.connectedProviders()
-            providers.value = r.providers.sortedWith(compareBy({ rank(it.id) }, { it.name }))
-            defaults = r.default
-            loaded.value = true
+            // Server warming up returns [] for a few seconds. Never wipe a good list with an empty one.
+            if (r.providers.isNotEmpty()) {
+                val kept = providers.value.associateBy { it.id }
+                val merged = (r.providers + providers.value.filter { it.id !in r.providers.map { p -> p.id } })
+                providers.value = merged.sortedWith(compareBy({ rank(it.id) }, { it.name }))
+                defaults = r.default.ifEmpty { defaults }
+                loaded.value = true
+            } else if (providers.value.isEmpty()) {
+                loaded.value = false
+            }
         }
         runCatching { agents.value = api.agents().filter { !it.hidden && it.mode != "subagent" } }
         runCatching {
@@ -49,7 +56,16 @@ class Catalog(private val api: OpenCodeApi, private val prefs: Prefs, private va
     private fun ensureSelection() {
         val list = providers.value
         if (list.isEmpty()) return
-        if (prefs.hasModel && model(prefs.providerId, prefs.modelId) != null) return
+        // Keep a saved selection that still exists somewhere. Only replace a truly missing one.
+        if (prefs.hasModel) {
+            val p = list.firstOrNull { it.id == prefs.providerId }
+            if (p != null && p.models.containsKey(prefs.modelId)) return
+            if (p != null && list.any { q -> q.models.containsKey(prefs.modelId) }) {
+                // Model moved provider: keep the model id, just fix the provider.
+                prefs.providerId = list.first { q -> q.models.containsKey(prefs.modelId) }.id
+                return
+            }
+        }
         for (p in list) {
             val m = defaults[p.id]?.let { p.models[it] } ?: p.models.values.firstOrNull() ?: continue
             prefs.providerId = p.id; prefs.modelId = m.id; prefs.variant = ""
@@ -68,6 +84,9 @@ class Catalog(private val api: OpenCodeApi, private val prefs: Prefs, private va
 
     fun selectedLabel(): String {
         val m = model(prefs.providerId, prefs.modelId)
-        return m?.name?.takeIf { it.isNotBlank() } ?: prefs.modelId.ifBlank { "Select model" }
+        if (m != null && m.name.isNotBlank()) return m.name
+        if (prefs.modelId.isNotBlank()) return prefs.modelId
+        if (providers.value.isEmpty()) return "Connecting…"
+        return "Select model"
     }
 }

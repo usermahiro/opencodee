@@ -5,6 +5,7 @@ import java.util.concurrent.TimeUnit
 /** Optional root (su, Magisk / KernelSU): lets proot see other apps' data such as the Termux home. */
 object Root {
     const val TERMUX_HOME = "/data/user/0/com.termux/files/home"
+    const val TERMUX_ROOT = "/data/user/0/com.termux"
 
     /** Result of running [cmd] through `su -c`: exit code (-1 = no su / timeout) and output. */
     fun run(cmd: String, timeoutSec: Long = 30): Pair<Int, String> = try {
@@ -29,9 +30,20 @@ object Root {
             "exec " + argv.joinToString(" ") { quote(it) }
 
     @Volatile private var termux: Boolean? = null
-    /** Whether the Termux home exists (checked as root; the app itself can't see it). */
-    fun termuxHomeExists(): Boolean = termux ?: (run("test -d ${quote(TERMUX_HOME)}", 15).first == 0).also { termux = it }
-    fun forgetProbe() { termux = null }
+    @Volatile private var lastProbe = 0L
+    /** Whether the Termux data dir exists (checked as root; the app itself can't see it). */
+    fun termuxHomeExists(): Boolean {
+        if (termux == true) return true
+        val now = System.currentTimeMillis()
+        if (now - lastProbe < 5000) return false
+        lastProbe = now
+        // Probe both home and the whole Termux data dir. Only cache a success:
+        // a failed probe during the root grant prompt must not permanently disable the bind.
+        val ok = run("test -d ${quote(TERMUX_HOME)} && test -d ${quote(TERMUX_ROOT)}", 15).first == 0
+        if (ok) termux = true
+        return ok
+    }
+    fun forgetProbe() { termux = null; lastProbe = 0L }
 
     /** Kills proot processes of this app's rootfs: killing the `su` client doesn't always kill its child. */
     fun killProot(rootfs: String) { run("pkill -f -- ${quote("[-]-rootfs=$rootfs")}", 10) }

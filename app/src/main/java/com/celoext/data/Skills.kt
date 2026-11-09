@@ -134,15 +134,38 @@ Skills are folders in $DIR, one per skill, each with a SKILL.md:
      * Import from a file: .zip / .skill (a Claude or ChatGPT archive with one or more folders with SKILL.md)
      * or a single .md. Returns the names of the added skills.
      */
+    private const val MAX_IMPORT_BYTES = 16L * 1024 * 1024
+
     suspend fun import(ctx: Context, uri: Uri): List<String> = withContext(Dispatchers.IO) {
         val fileName = runCatching {
             ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
         }.getOrNull() ?: uri.lastPathSegment.orEmpty()
-        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Could not read the file")
-        val isZip = bytes.size > 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()
-        val added = if (isZip) importZip(bytes, fileName) else listOf(importMarkdown(String(bytes), fileName.substringBeforeLast('.')))
-        changed()
-        added
+        // Never readBytes() a whole pick into RAM: stream to a temp file with a hard cap.
+        val tmp = File(ctx.cacheDir, "skill-import-" + fileName.hashCode())
+        tmp.delete()
+        try {
+            var total = 0L
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                tmp.outputStream().use { output ->
+                    val buf = ByteArray(1 shl 16)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > MAX_IMPORT_BYTES) error("The archive is too big (over ${MAX_IMPORT_BYTES / (1024 * 1024)} MB)")
+                        output.write(buf, 0, n)
+                    }
+                }
+            } ?: error("Could not read the file")
+            val hdr = ByteArray(4)
+            val r = tmp.inputStream().use { it.read(hdr, 0, 4) }
+            val isZip = r == 4 && hdr[0] == 'P'.code.toByte() && hdr[1] == 'K'.code.toByte()
+            val added = if (isZip) importZip(tmp, fileName) else listOf(importMarkdown(tmp.readText(), fileName.substringBeforeLast('.')))
+            changed()
+            added
+        } finally {
+            runCatching { tmp.delete() }
+        }
     }
 
     private fun importMarkdown(text: String, fallback: String): String {
@@ -154,10 +177,10 @@ Skills are folders in $DIR, one per skill, each with a SKILL.md:
         return n
     }
 
-    private fun importZip(bytes: ByteArray, fileName: String): List<String> {
+    private fun importZip(file: File, fileName: String): List<String> {
         val entries = LinkedHashMap<String, ByteArray>()
         var unpacked = 0L
-        ZipInputStream(bytes.inputStream()).use { z ->
+        ZipInputStream(file.inputStream()).use { z ->
             while (true) {
                 val e = z.nextEntry ?: break
                 val p = e.name.replace('\\', '/').trimStart('/')

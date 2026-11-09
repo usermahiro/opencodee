@@ -272,8 +272,12 @@ fun ProfileScreen(nav: Nav) {
     var saved by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) runCatching {
-            val bytes = ctx.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            ctx.contentResolver.openInputStream(uri)!!.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1024) sample *= 2
+            require(bounds.outWidth > 0)
+            val bmp = ctx.contentResolver.openInputStream(uri)!!.use { android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }) } ?: return@runCatching
             val side = minOf(bmp.width, bmp.height)
             val sq = android.graphics.Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
             val out = android.graphics.Bitmap.createScaledBitmap(sq, 512.coerceAtMost(side), 512.coerceAtMost(side), true)

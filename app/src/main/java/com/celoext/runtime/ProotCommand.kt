@@ -9,6 +9,7 @@ class ProotCommand(private val paths: RuntimePaths, private val prefs: Prefs) {
     private companion object {
         const val SHARED_STORAGE = "/storage/emulated/0"
         const val TERMUX_HOME = "/data/user/0/com.termux/files/home"
+        const val TERMUX_ROOT = "/data/user/0/com.termux"
     }
 
     fun env(): Map<String, String> = buildMap {
@@ -56,8 +57,13 @@ class ProotCommand(private val paths: RuntimePaths, private val prefs: Prefs) {
             cmd += "--bind=$SHARED_STORAGE"
             cmd += "--bind=$SHARED_STORAGE:/sdcard"
         }
-        // Termux home: Android blocks other apps' data, so this only shows up when the path is reachable (e.g. root / permissive SELinux).
-        if (if (prefs.rootMode) Root.termuxHomeExists() else File(TERMUX_HOME).exists()) cmd += "--bind=$TERMUX_HOME"
+        // Termux: bind the FULL dir /data/user/0/com.termux (not only files/home) so
+        // /data/user/0/com.termux, files/home, cache and storage all resolve inside the guest.
+        val hasTermux = if (prefs.rootMode) Root.termuxHomeExists() else File(TERMUX_ROOT).exists()
+        if (hasTermux) {
+            cmd += "--bind=$TERMUX_ROOT"
+            cmd += "--bind=$TERMUX_ROOT:/root/termux"
+        }
         val guestEnv = linkedMapOf(
             "HOME" to "/root",
             "USER" to "root",

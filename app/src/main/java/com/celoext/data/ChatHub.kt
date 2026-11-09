@@ -111,9 +111,18 @@ class ChatHub(private val api: OpenCodeApi, private val events: EventHub, privat
     suspend fun refreshSessions() {
         try {
             val list = api.listSessions(limit = com.celoext.api.OpenCodeApi.MAX_LIMIT)
-            all.value = list.associateBy { it.id }
-            publish()
-            loaded.value = true
+            if (list.isNotEmpty()) {
+                all.value = list.associateBy { it.id }
+                publish()
+                loaded.value = true
+            } else if (loaded.value) {
+                // Empty reply is usually server warmup noise. Keep the last good list on screen.
+                return
+            } else {
+                all.value = emptyMap()
+                publish()
+                loaded.value = true
+            }
             // fetch what's waiting for an answer in every project that has sessions
             val dirs = list.map { it.directory }.distinct().take(12)
             val perms = ArrayList<PermissionReq>()
@@ -242,7 +251,7 @@ class ChatHub(private val api: OpenCodeApi, private val events: EventHub, privat
         return if (all.isEmpty()) null else buildJsonArray { all.forEach { add(it) } }
     }
 
-    fun isChat(s: Session) = s.directory.trimEnd('/') == CHAT_DIR
+    fun isChat(s: Session) = s.directory.trimEnd('/') == CHAT_DIR.trimEnd('/')
     /** Regular chats go to the menu and "Recents"; project ones to the Code tab. A remote device has no such split. */
     fun chatsOnly(l: List<Session>) = if (Graph.devices.isRemote) l else l.filter { isChat(it) }
     /**

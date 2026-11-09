@@ -83,7 +83,7 @@ fun ChatScreen(id: String, nav: Nav, onMenu: () -> Unit) {
     val questions by hub.questions.collectAsState()
     val session = sessions.firstOrNull { it.id == id } ?: hub.session(id)
     val incognito = hub.isIncognito(id)
-    val busy = statuses[id] == "busy" || statuses[id] == "retry"
+    val busy = statuses[id] == "busy" || statuses[id] == "retry" || sendingNow
     val state = rememberComposerState()
     LaunchedEffect(id) { Graph.chats.drafts.remove(id)?.let { state.text = it } }
     val listState = rememberLazyListState()
@@ -295,7 +295,7 @@ fun ChatScreen(id: String, nav: Nav, onMenu: () -> Unit) {
             // Scrolling back through the conversation: the composer slides away so the answer gets the whole
             // screen, and slides back in when you reach the newest message (or start typing).
             androidx.compose.animation.AnimatedVisibility(
-                visible = stick || state.canSend || editing != null,
+                visible = true,
                 enter = androidx.compose.animation.slideInVertically(tween(180)) { it } + androidx.compose.animation.fadeIn(tween(120)),
                 exit = androidx.compose.animation.slideOutVertically(tween(180)) { it } + androidx.compose.animation.fadeOut(tween(90)),
             ) {
