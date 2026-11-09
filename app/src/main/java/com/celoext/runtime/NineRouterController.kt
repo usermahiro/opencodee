@@ -308,7 +308,6 @@ class NineRouterController(
                 dog.cancel()
             } finally {
                 p.destroy()
-                if (prefs.rootMode) Root.killProot(paths.rootfs.path)
                 if (p.isAlive) { runCatching { p.waitFor(3, TimeUnit.SECONDS) }; if (p.isAlive) p.destroyForcibly() }
                 process = null
                 reader.cancel()
@@ -344,7 +343,6 @@ class NineRouterController(
             ).start()
             if (!p.waitFor(8, TimeUnit.SECONDS)) p.destroyForcibly()
         }
-        if (prefs.rootMode) runCatching { Root.run("pkill -f '[9]router'", 10) }
     }
 
     private fun killPortOwner() {
@@ -377,7 +375,6 @@ class NineRouterController(
     fun requestStop() {
         stopRequested = true
         process?.destroy()
-        if (prefs.rootMode) Thread { Root.killProot(paths.rootfs.path) }.start()
         Thread { killLeftover() }.apply { isDaemon = true }.start()
     }
 
@@ -387,7 +384,6 @@ class NineRouterController(
             var waited = 0
             while (waited < 10_000 && (serverAlive || portBusy())) { Thread.sleep(200); waited += 200 }
             killLeftover()
-            if (prefs.rootMode) Root.killProot(paths.rootfs.path)
             startServer()
         }.apply { isDaemon = true }.start()
     }

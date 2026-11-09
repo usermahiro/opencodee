@@ -182,12 +182,6 @@ class RuntimeController(
             var waited = 0
             while (isActive && portBusy() && waited < 8_000) { delay(250); waited += 250 }
             if (waited > 0) logLine("Waited ${waited}ms for the port to be free")
-            // root mode: files the server made as real root (0600) would lock the app out of its own config
-            if (prefs.rootMode) runCatching {
-                val uid = android.os.Process.myUid()
-                val dirs = listOf("root/.config", "root/.local", "root/work").map { File(paths.rootfs, it) }.filter { it.exists() }
-                if (dirs.isNotEmpty()) Root.run(dirs.joinToString("; ") { "chown -R $uid:$uid ${Root.quote(it.path)}; chmod -R u+rwX ${Root.quote(it.path)}" }, 90)
-            }
             val pb = proot.processBuilder(
                 listOf(OC_BIN, "serve", "--hostname", "127.0.0.1", "--port", prefs.serverPort),
                 cwd = "/root/work",
@@ -230,7 +224,6 @@ class RuntimeController(
                 dog.cancel()
             } finally {
                 p.destroy()
-                if (prefs.rootMode) Root.killProot(paths.rootfs.path)
                 if (p.isAlive) { runCatching { p.waitFor(3, TimeUnit.SECONDS) }; if (p.isAlive) p.destroyForcibly() }
                 process = null
                 reader.cancel()
@@ -283,51 +276,27 @@ class RuntimeController(
             ).start()
             if (!p.waitFor(8, TimeUnit.SECONDS)) p.destroyForcibly()
         }
-        if (prefs.rootMode) runCatching { Root.run("pkill -f '[o]pencode'", 10) }
     }
 
     fun requestStop() {
         stopRequested = true
         process?.destroy()
-        if (prefs.rootMode) Thread { Root.killProot(paths.rootfs.path) }.start()
         // in the background: starting a proot takes a moment and this can be called from the main thread
         Thread { killLeftoverServer() }.apply { isDaemon = true }.start()
     }
 
-    /** Stop, wait until the port is really free, start again (Restart button, root-mode switch). */
-    /**
-     * Stops the server, kills whatever is left (`pkill -f opencode`, in the mode that started it), runs [beforeStart]
-     * (for settings that must change only once the old process is gone) and starts it again.
-     */
+    /** Stop, wait until the port is really free, start again (Restart button). */
     fun restartServer(beforeStart: () -> Unit = {}) {
         stopServer()
         Thread {
             var waited = 0
             while (waited < 10_000 && (serverAlive || portBusy())) { Thread.sleep(200); waited += 200 }
             killLeftoverServer()
-            if (prefs.rootMode) Root.killProot(paths.rootfs.path)
             runCatching { beforeStart() }
             startServer()
         }.apply { isDaemon = true }.start()
     }
 
-    /**
-     * Switch root mode on/off. Asks for root first. The running server is killed in the OLD mode before the switch
-     * (a root process can't be killed from the app, and the other way round), then files made as root go back to the app
-     * when turning it off, and the server starts again in the new mode.
-     */
-    suspend fun setRootMode(on: Boolean): Boolean = withContext(Dispatchers.IO) {
-        if (on && !Root.check()) return@withContext false
-        restartServer {
-            val was = prefs.rootMode
-            if (on) { Root.forgetProbe(); prefs.rootMode = true }
-            else {
-                prefs.rootMode = false
-                if (was) Root.handBack(app.filesDir.path, android.os.Process.myUid())
-            }
-        }
-        true
-    }
 
     /** Start the server through a foreground service, otherwise Android kills the process in the background. */
     fun startServer() {
@@ -379,7 +348,6 @@ class RuntimeController(
                 killLeftoverServer()
                 // The chat database is only consistent once the server has stopped writing.
                 Vault.save()
-                if (prefs.rootMode) Root.run("rm -rf ${Root.quote(paths.rootfs.path)} ${Root.quote(paths.downloads.path)}", 300)
                 paths.rootfs.deleteRecursively()
                 paths.downloads.deleteRecursively()
                 prefs.runtimeReady = false

@@ -170,14 +170,6 @@ fun ServerScreen(nav: Nav) {
             SettingsGroup {
                 SettingsRow("Start with the app", icon = Ic.Zap, trailing = { OcSwitch(prefs.autoStartServer) { prefs.autoStartServer = it } })
                 SettingsRow("Keep CPU awake while running", icon = Ic.Server, trailing = { OcSwitch(prefs.keepAwake) { prefs.keepAwake = it } })
-                SettingsRow("Run as root", subtitle = "Uses su (Magisk / KernelSU) so the environment can read the Termux home and other protected paths", icon = Ic.Shield, trailing = {
-                    OcSwitch(prefs.rootMode) { on ->
-                        scope.launch {
-                            val ok = Graph.runtime.setRootMode(on)
-                            if (!ok) Graph.chats.toasts.tryEmit("Root was not granted (no su, or you tapped Deny)")
-                        }
-                    }
-                })
                 SettingsRow("Compatibility mode", subtitle = "Try this if the server keeps crashing on your phone", icon = Ic.Shield, trailing = { OcSwitch(prefs.noSeccomp) { prefs.noSeccomp = it; Graph.runtime.restartServer() } })
                 // Android 12+ kills "extra" child processes of apps (phantom process killer), and proot has many
                 SettingsRow("Server keeps stopping?", subtitle = "Developer options → turn on “Disable child process restrictions”", icon = Ic.Info, onClick = {

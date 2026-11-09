@@ -69,24 +69,13 @@ object FreeModels {
         }
     }
 
-    /**
-     * Gives the app access to the config folders again. In root mode the server runs as real root and OpenCode writes its
-     * files 0600, so the app (another uid) gets EACCES: chown them back to the app. Also opens the mode bits from inside
-     * the environment. True when something ran.
-     */
+    /** Opens the mode bits on the config folders from inside the environment. True when it ran. */
     private suspend fun fixConfigPerms(): Boolean = runCatching {
-        var ran = false
-        if (Graph.prefs.rootMode) {
-            val dirs = listOf("/root/.config/opencode", "/root/.local/share/opencode", "/root/.config", "/root/.local").map { Graph.paths.host(it).path }
-            val uid = android.os.Process.myUid()
-            val cmd = dirs.joinToString("; ") { "chown -R $uid:$uid ${com.celoext.runtime.Root.quote(it)}; chmod -R u+rwX ${com.celoext.runtime.Root.quote(it)}" }
-            ran = com.celoext.runtime.Root.run(cmd, 60).first == 0
-        }
         val rc = Graph.runtime.runGuest(
             listOf("/bin/bash", "-c", "mkdir -p /root/.config/opencode /root/.local/share/opencode; chmod -R a+rwX /root/.config/opencode /root/.local/share/opencode; true"),
             timeoutSec = 30,
         )
-        ran || rc == 0
+        rc == 0
     }.getOrDefault(false)
 
     /** Drops line and block comments (outside strings) and trailing commas so a .jsonc file can be parsed. */

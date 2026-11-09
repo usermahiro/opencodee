@@ -115,7 +115,6 @@ class Prefs(ctx: Context) {
     var keepAwake by bool("keep_awake", true)
     var autoStartServer by bool("auto_start", true)
     var noSeccomp by bool("no_seccomp", false)
-    var rootMode by bool("root_mode", false)          // run proot through su (Termux home, system files)
     var runtimeReady by bool("runtime_ready", false)
     var opencodeVersion by str("opencode_version", "")
 

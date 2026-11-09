@@ -8,8 +8,6 @@ class ProotCommand(private val paths: RuntimePaths, private val prefs: Prefs) {
 
     private companion object {
         const val SHARED_STORAGE = "/storage/emulated/0"
-        const val TERMUX_HOME = "/data/user/0/com.termux/files/home"
-        const val TERMUX_ROOT = "/data/user/0/com.termux"
     }
 
     fun env(): Map<String, String> = buildMap {
@@ -19,11 +17,10 @@ class ProotCommand(private val paths: RuntimePaths, private val prefs: Prefs) {
         if (prefs.noSeccomp) put("PROOT_NO_SECCOMP", "1")
     }
 
-    /** The process to start: proot directly, or through `su -c` in root mode. */
+    /** The process to start: proot directly (root mode removed). */
     fun processBuilder(guestArgv: List<String>, cwd: String = "/root", extraEnv: Map<String, String> = emptyMap()): ProcessBuilder {
         val argv = build(guestArgv, cwd, extraEnv)
-        val pb = if (prefs.rootMode) ProcessBuilder("su", "-c", Root.script(env(), argv))
-        else ProcessBuilder(argv).also { it.environment().putAll(env()) }
+        val pb = ProcessBuilder(argv).also { it.environment().putAll(env()) }
         return pb.redirectErrorStream(true)
     }
 
@@ -57,13 +54,7 @@ class ProotCommand(private val paths: RuntimePaths, private val prefs: Prefs) {
             cmd += "--bind=$SHARED_STORAGE"
             cmd += "--bind=$SHARED_STORAGE:/sdcard"
         }
-        // Termux: bind the FULL dir /data/user/0/com.termux (not only files/home) so
-        // /data/user/0/com.termux, files/home, cache and storage all resolve inside the guest.
-        val hasTermux = if (prefs.rootMode) Root.termuxHomeExists() else File(TERMUX_ROOT).exists()
-        if (hasTermux) {
-            cmd += "--bind=$TERMUX_ROOT"
-            cmd += "--bind=$TERMUX_ROOT:/root/termux"
-        }
+        // Root mode removed: no su, no Termux bind, no protected-path access.
         val guestEnv = linkedMapOf(
             "HOME" to "/root",
             "USER" to "root",
