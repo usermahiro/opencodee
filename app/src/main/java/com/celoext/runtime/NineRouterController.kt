@@ -222,9 +222,22 @@ class NineRouterController(
         var windowStart = System.currentTimeMillis()
         while (isActive && !stopRequested) {
             state.value = NineRouterState.Starting
+            // If a previous instance survived (app restart / crash), reuse it instead of fighting for the port.
+            val existing = if (portBusy()) runCatching { healthVersionOrThrow() }.getOrNull() else null
+            if (existing != null) {
+                logLine("9Router is already running on port $port: using it")
+                state.value = NineRouterState.Running(existing)
+                var bad0 = 0
+                while (isActive && !stopRequested && bad0 < 3) {
+                    delay(5_000)
+                    bad0 = if (runCatching { healthVersionOrThrow() }.isSuccess) 0 else bad0 + 1
+                }
+                if (!stopRequested) continue
+                break
+            }
             killLeftover()
             var waited = 0
-            while (isActive && portBusy() && waited < 8_000) { delay(250); waited += 250 }
+            while (isActive && portBusy() && waited < 15_000) { delay(250); waited += 250 }
             if (waited > 0) logLine("Waited ${waited}ms for port $port to be free")
             if (portBusy()) {
                 // Could not kill the holder. If it is a healthy 9Router (an instance from before), use it instead of fighting for the port.
@@ -266,7 +279,7 @@ class NineRouterController(
                 return@withContext
             }
             process = p
-            val reader = launch { runCatching { p.inputStream.bufferedReader().forEachLine { logLine(it) } } }
+            val reader = launch { runCatching { p.inputStream.bufferedReader().forEachLine { logLine(it); if (it.contains("EADDRINUSE")) { killLeftover(); p.destroy() } } } }
             try {
                 var version: String? = null
                 val deadline = System.currentTimeMillis() + 180_000
