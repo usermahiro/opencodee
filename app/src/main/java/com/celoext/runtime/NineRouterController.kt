@@ -334,6 +334,9 @@ class NineRouterController(
 
     /** Kill leftover 9Router processes (the CLI and the detached server it spawned). */
     fun killLeftover() {
+        // Host-side kill by socket inode: guest fuser/lsof/ss are often absent in the minimal rootfs,
+        // and the Next child renames itself, so name-based pkill misses it. Map port -> inode -> pid via /proc.
+        killPortOwner()
         runCatching {
             val p = proot.processBuilder(
                 listOf("/bin/sh", "-c", KILL_SCRIPT, "sh", port.toString()),
@@ -342,6 +345,33 @@ class NineRouterController(
             if (!p.waitFor(8, TimeUnit.SECONDS)) p.destroyForcibly()
         }
         if (prefs.rootMode) runCatching { Root.run("pkill -f '[9]router'", 10) }
+    }
+
+    private fun killPortOwner() {
+        val hex = port.toString(16).uppercase().padStart(4, '0')
+        val inodes = LinkedHashSet<String>()
+        for (f in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
+            runCatching {
+                java.io.File(f).forEachLine { line ->
+                    val parts = line.trim().split(Regex("\\s+"))
+                    if (parts.size > 9 && parts[1].endsWith(":$hex") && parts[3] == "0A") inodes += parts[9]
+                }
+            }
+        }
+        if (inodes.isEmpty()) return
+        java.io.File("/proc").listFiles { f -> f.isDirectory && f.name.all { it.isDigit() } }?.forEach { proc ->
+            proc.listFiles()?.forEach { fd ->
+                runCatching {
+                    val target = fd.canonicalPath
+                    if (inodes.any { target == "socket:[$it]" }) {
+                        val pid = proc.name.toIntOrNull() ?: return@forEach
+                        runCatching { android.system.Os.kill(pid, android.system.OsConstants.SIGTERM) }
+                        runCatching { android.system.Os.kill(pid, android.system.OsConstants.SIGKILL) }
+                        logLine("Killed port owner pid=$pid on $port")
+                    }
+                }
+            }
+        }
     }
 
     fun requestStop() {
