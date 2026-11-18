@@ -41,7 +41,7 @@ object DebExtractor {
                 error("${deb.name}: data member is bzip2-compressed (members: ${members.joinToString()}); only xz, gzip and plain tar are supported")
             }
             // Termux debs are double compressed today; accept a plain .gz or .tar too, cheap insurance.
-            val raw = TarExtractor.CountingStream(data.inputStream())
+            val raw = CountingStream(data.inputStream())
             val tar: InputStream = when {
                 data.size > 6 && data[0] == 0xFD.toByte() && data[1] == '7'.code.toByte() && data[2] == 'z'.code.toByte() -> XZInputStream(raw)
                 data.size > 2 && data[0] == 0x1F.toByte() && data[1] == 0x8B.toByte() -> java.util.zip.GZIPInputStream(raw)

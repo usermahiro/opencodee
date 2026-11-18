@@ -86,6 +86,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    implementation(libs.xz)
     implementation(libs.coil.compose)
     implementation(libs.coil.network)
     implementation(libs.gms.code.scanner)

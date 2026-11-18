@@ -15,19 +15,35 @@ import java.util.zip.GZIPInputStream
 object TarExtractor {
     class Result(val files: Int, val skipped: Int)
 
+    /** Extracts a .tar.gz file. */
     fun extract(archive: File, dest: File, onProgress: (done: Long, total: Long) -> Unit = { _, _ -> }): Result {
+        val counting = CountingStream(FileInputStream(archive).buffered(1 shl 16))
+        return GZIPInputStream(counting, 1 shl 16).use { gz ->
+            extract(gz, archive.length(), dest, onProgress) { counting.count }
+        }
+    }
+
+    /**
+     * Extracts an already-decompressed tar stream. [total] and [consumed] describe progress in the
+     * unit of the underlying (compressed) source, e.g. bytes read from the archive file.
+     */
+    fun extract(
+        input: InputStream,
+        total: Long,
+        dest: File,
+        onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
+        consumed: () -> Long,
+    ): Result {
         dest.mkdirs()
         val destCanon = dest.canonicalFile
         // "/a/rootfs-evil" must not count as inside "/a/rootfs": compare with a trailing separator
         fun inside(f: File): Boolean = f.canonicalFile.path.let { it == destCanon.path || it.startsWith(destCanon.path + File.separator) }
-        val total = archive.length()
-        val counting = CountingStream(FileInputStream(archive).buffered(1 shl 16))
         val dirModes = ArrayList<Pair<File, Int>>()
         var files = 0
         var skipped = 0
         var lastReport = 0L
 
-        GZIPInputStream(counting, 1 shl 16).use { gz ->
+        input.let { gz ->
             val hdr = ByteArray(512)
             var longName: String? = null
             var longLink: String? = null
@@ -113,7 +129,7 @@ object TarExtractor {
                     else -> { skip(gz, size + pad(size)); skipped++ } // devices, fifo
                 }
 
-                val now = counting.count
+                val now = consumed()
                 if (now - lastReport > 256 * 1024) { lastReport = now; onProgress(now, total) }
             }
         }
@@ -185,9 +201,10 @@ object TarExtractor {
         return v
     }
 
-    private class CountingStream(i: InputStream) : FilterInputStream(i) {
-        var count = 0L
-        override fun read(): Int = super.read().also { if (it >= 0) count++ }
-        override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) count += it }
-    }
+}
+
+internal class CountingStream(i: InputStream) : FilterInputStream(i) {
+    var count = 0L
+    override fun read(): Int = super.read().also { if (it >= 0) count++ }
+    override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) count += it }
 }

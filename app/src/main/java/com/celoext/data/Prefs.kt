@@ -124,6 +124,7 @@ class Prefs(ctx: Context) {
     var variant by str("model_variant", "")
     var agent by str("agent", "build")
     var permissionMode by str("permission_mode", "auto")  // ask | edits | auto
+    var rootFallback by bool("root_fallback", true)       // retry denied file/exec operations through su (KernelSU/Magisk)
     var currentDir by str("current_dir", "/root/work")
     var pinned by str("pinned", "")
 
