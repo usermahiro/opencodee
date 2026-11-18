@@ -24,8 +24,8 @@ android {
         // The APK is distributed as a file, not through Play.
         targetSdk = 28
         // gradle.properties holds the version; CI overrides both with -P flags (run number).
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 100
-        versionName = (project.findProperty("appVersionName") as String?) ?: "test-v1"
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 36
+        versionName = (project.findProperty("appVersionName") as String?) ?: "0.0.2 beta-1"
         ndk { abiFilters += "arm64-v8a" }
         // Repo whose GitHub releases the in-app updater checks. Set `updateRepo=owner/name` in gradle.properties.
         val updateRepo = (project.findProperty("updateRepo") as String?) ?: "usermahiro/opencodee"
@@ -90,7 +90,6 @@ dependencies {
     implementation(libs.coil.network)
     implementation(libs.gms.code.scanner)
     implementation(libs.androidx.fragment)
-    implementation(libs.xz.java)
 
     testImplementation(libs.junit)
 }

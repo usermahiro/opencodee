@@ -144,9 +144,7 @@ The user talks to you from a phone app. It cannot see your terminal or your disk
             val b = old.indexOf(END)
             val without = if (a >= 0 && b > a) (old.substring(0, a) + old.substring(b + END.length)).trim() else old.trim()
             Graph.paths.host("/root/outbox").mkdirs()
-            val body0 = listOfNotNull(filesPrompt, Skills.prompt, DefaultSkills.prompt, GitHub.prompt, prompt().takeIf { Graph.prefs.memoryEnabled }, snapshot().takeIf { Graph.prefs.memoryEnabled }).joinToString("\n\n")
-            // AGENTS.md is read by the local (native) server, which can't see /root: translate the paths.
-            val body = if (Graph.devices.isRemote) body0 else body0.replace("/root/", Graph.paths.serverPath("/root") + "/")
+            val body = listOfNotNull(filesPrompt, Skills.prompt, DefaultSkills.prompt, GitHub.prompt, prompt().takeIf { Graph.prefs.memoryEnabled }, snapshot().takeIf { Graph.prefs.memoryEnabled }).joinToString("\n\n")
             val block = "$START\n$body\n$END"
             val text = listOf(without, block).filter { it.isNotEmpty() }.joinToString("\n\n")
             if (text != old.trim()) f.writeText(text + "\n")

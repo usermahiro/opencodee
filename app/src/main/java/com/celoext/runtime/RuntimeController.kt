@@ -3,6 +3,7 @@ package com.celoext.runtime
 import com.celoext.data.Vault
 import android.app.Application
 import android.content.Intent
+import android.database.sqlite.SQLiteDatabase
 import androidx.core.content.ContextCompat
 import com.celoext.api.OpenCodeApi
 import com.celoext.data.Memory
@@ -31,26 +32,14 @@ class RuntimeController(
     companion object {
         const val ROOTFS_URL = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz"
         const val ROOTFS_SHA = "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2"
-
-        // Native OpenCode: the opencode-termux community port (bionic binaries that run on Android
-        // without Termux, targetSdk 28 keeps exec from app storage allowed). Pinned release + the
-        // four Termux packages it depends on, checksums from the release SHA256SUMS / the repo index.
-        const val OCT_REPO = "Spectra010s/opencode-termux"
-        const val OCT_VERSION = "2.2.7"
-        const val OCT_SHA = "432c809a6e2dcb4ea08be79d96694b755c22129de10d07ff1abf2bebae4c8266"
-        fun octUrl(v: String) = "https://github.com/$OCT_REPO/releases/download/v$v/opencode-$v-android-aarch64-bundle.tar.gz"
-        const val TERMUX = "https://packages.termux.dev/apt/termux-main/pool/main"
-        class Deb(val name: String, val url: String, val sha: String)
-        val TERMUX_DEBS = listOf(
-            Deb("bun", "$TERMUX/b/bun/bun_1.4.4-3_aarch64.deb", "ceb20de1f3eff7cd1230d80d85e2d916611a89e90a93113d682d1d721591f4d8"),
-            Deb("libicu", "$TERMUX/libi/libicu/libicu_79.1_aarch64.deb", "83c980a010e957738e3567127801d66a1b9bd7e404a4fda98788048ee57d606c"),
-            Deb("ripgrep", "$TERMUX/r/ripgrep/ripgrep_15.2.0_aarch64.deb", "38e28bc297000517b24702568a483eca7dc3323eb6bdccc9033f031776bdcc6c"),
-            Deb("pcre2", "$TERMUX/p/pcre2/pcre2_10.49_aarch64.deb", "c27995e5f52b8ecc9b8b3e662eb08e49f82a18bfd3f34343936acc7b23964724"),
-        )
+        // Pin a tested version: the client is written against its API.
+        const val OC_VERSION = "2.2.5"
+        const val OC_BIN = "/usr/local/bin/opencode"
+        fun ocUrl(v: String) = "https://github.com/anomalyco/opencode/releases/download/v$v/opencode-linux-arm64.tar.gz"
     }
 
     val state = MutableStateFlow<RuntimeState>(
-        if (prefs.runtimeReady && paths.nativeReady) RuntimeState.Stopped else RuntimeState.NotInstalled
+        if (prefs.runtimeReady && paths.opencodeBin.exists()) RuntimeState.Stopped else RuntimeState.NotInstalled
     )
     val log = MutableStateFlow<List<String>>(emptyList())
 
@@ -59,7 +48,6 @@ class RuntimeController(
     @Volatile private var stopRequested = false
     @Volatile private var installing = false
     @Volatile private var resetting = false
-    private val supervising = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun logLine(s: String) {
         android.util.Log.w("CeloOC", s)
@@ -97,14 +85,14 @@ class RuntimeController(
 
             Vault.restore()
             Memory.sync() // copies the default skills and writes their rules into AGENTS.md
-            installNative()
-            nativeSmokeTest()
+            // The checksum comes from GitHub (asset digest); no checksum, no install.
+            val ocSha = Downloader.githubAssetSha256("https://api.github.com/repos/anomalyco/opencode/releases/tags/v$OC_VERSION", "opencode-linux-arm64.tar.gz")
+                ?: error("GitHub gave no checksum for OpenCode $OC_VERSION, so it was not installed")
+            installOpencode(OC_VERSION, OC_URL_OR(OC_VERSION), ocSha)
+            smokeTest()
 
             prefs.runtimeReady = true
             state.value = RuntimeState.Stopped
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            state.value = RuntimeState.InstallFailed("Installation was interrupted")
-            throw e
         } catch (e: Throwable) {
             logLine("Install failed: ${e.message}")
             state.value = RuntimeState.InstallFailed(e.message ?: e.javaClass.simpleName)
@@ -113,147 +101,45 @@ class RuntimeController(
         }
     }
 
-    /**
-     * Native runtime, no proot: the opencode-termux bundle (a sh launcher + the JS module graph +
-     * bionic native libraries) plus the Termux packages it runs on — bun, libicu, ripgrep, pcre2.
-     * Everything is downloaded with pinned sha-256s and unpacked with our own extractors.
-     */
-    private fun installNative() {
-        // Also redo a bundle that was extracted but never fully patched (an earlier install died half way):
-        // it would be reused as is and then fail at startup with placeholder paths.
-        if (paths.opencodeNativeBin.isFile &&
-            (!runCatching { File(paths.opencodeBundle, "index.js").isFile }.getOrDefault(false) || bundleHasPlaceholders())
-        ) {
-            paths.bundleDir.deleteRecursively()
-        }
-        if (!paths.opencodeNativeBin.isFile) {
-            step("Downloading OpenCode", 0f)
-            val tgz = File(paths.downloads, "opencode-native-$OCT_VERSION.tar.gz")
-            Downloader.fetch(octUrl(OCT_VERSION), tgz, OCT_SHA) { d, t -> step("Downloading OpenCode", frac(d, t), mb(d, t)) }
-            step("Installing OpenCode", 0f)
-            paths.bundleDir.deleteRecursively()
-            TarExtractor.extract(tgz, paths.bundleDir) { d, t -> step("Installing OpenCode", frac(d, t)) }
-            tgz.delete()
-            // The bundle is built against @TERMUX_PREFIX@ so one artefact fits every Termux
-            // prefix; point it at our own directory instead (same as the upstream installer).
-            val marker = "@TERMUX_PREFIX@/lib/opencode"
-            val ours = paths.opencodeBundle.path
-            var patched = 0
-            // Never rewrite binaries (bundleFiles skips .so/.node/.bin). ISO-8859-1 maps every byte to one char,
-            // so a file that isn't valid UTF-8 still comes back byte for byte except for the replaced marker.
-            bundleFiles().forEach { f ->
-                val text = runCatching { String(f.readBytes(), Charsets.ISO_8859_1) }.getOrNull() ?: return@forEach
-                if (text.contains(marker)) {
-                    f.writeBytes(text.replace(marker, ours).toByteArray(Charsets.ISO_8859_1))
-                    patched++
-                }
-            }
-            logLine("bundle: patched $patched files from @TERMUX_PREFIX@ to ${paths.bundleDir.path}")
-            if (bundleHasPlaceholders()) error("Release bundle still contains placeholder paths; it cannot run here")
-            // The launcher ships with a Termux shebang; Android's /system/bin/sh is the equivalent here.
-            val launcher = paths.opencodeNativeBin
-            val shebang = "#!/system/bin/sh\n"
-            runCatching {
-                val text = launcher.readText()
-                if (text.startsWith("#!/data/data/com.termux")) launcher.writeText(shebang + text.substringAfter('\n'))
-            }
-            if (runCatching { launcher.readText().startsWith("#!/system/bin/sh") }.getOrDefault(false)) {
-                logLine("launcher: shebang patched to /system/bin/sh")
-            } else {
-                // Unexpected launcher layout: bypass the script at runtime and exec bun directly.
-                logLine("launcher: unexpected format, the server will exec bun directly")
-            }
-            launcher.setExecutable(true, false)
-        }
-        // The Termux packages the bundle runs on. Nothing here is apt: pure downloads + unzip.
-        val usrRoot = File(paths.nativeUsr, "data/data/com.termux/files/usr")
-        for (deb in TERMUX_DEBS) {
-            val have = when (deb.name) {
-                "bun" -> File(usrRoot, "bin/bun").isFile
-                "libicu" -> File(usrRoot, "lib/libicuuc.so.79.1").isFile
-                "ripgrep" -> File(usrRoot, "bin/rg").isFile
-                "pcre2" -> File(usrRoot, "lib/libpcre2-8.so").isFile
-                else -> false
-            }
-            if (have) { logLine("termux ${deb.name}: already installed"); continue }
-            step("Downloading ${deb.name}", 0f)
-            val f = File(paths.downloads, "${deb.name}-${deb.sha.take(8)}.deb")
-            Downloader.fetch(deb.url, f, deb.sha) { d, t -> step("Downloading ${deb.name}", frac(d, t), mb(d, t)) }
-            step("Installing ${deb.name}", 0f)
-            val r = DebExtractor.extract(f, paths.nativeUsr) { d, t -> step("Installing ${deb.name}", frac(d, t)) }
-            logLine("termux ${deb.name}: ${r.files} files")
-            f.delete()
-        }
-        if (!File(usrRoot, "bin/bun").isFile) error("bun did not land in the Termux layout; install failed")
-        paths.tmp.mkdirs()
-        paths.nativeHome.mkdirs()
-        // One-time migration: an existing proot install keeps its /root inside the old rootfs.
-        // A marker instead of "the native home is empty": Vault.restore() and Memory.sync() fill it before this runs.
-        val oldRoot = File(paths.rootfs, "root")
-        val migrated = File(paths.nativeHome, ".migrated-from-rootfs")
-        if (!migrated.exists() && oldRoot.isDirectory && oldRoot.list()?.isNotEmpty() == true) {
-            logLine("migrating the old /root into the native home")
-            // Files that already exist in the native home win; a clash must not abort the whole copy.
-            runCatching { oldRoot.copyRecursively(paths.nativeHome, overwrite = false) { _, _ -> kotlin.io.OnErrorAction.SKIP } }
-            runCatching { migrated.writeText("1") }
-        }
-        paths.nativeHome.resolve("work").mkdirs()
-        paths.nativeHome.resolve(".config/opencode").mkdirs()
-        paths.nativeHome.resolve("uploads").mkdirs()
-        paths.nativeHome.resolve("outbox").mkdirs()
-        prefs.opencodeVersion = OCT_VERSION
+    private fun OC_URL_OR(v: String) = ocUrl(v)
+
+    private fun installOpencode(version: String, url: String, sha: String?) {
+        val tgz = File(paths.downloads, "opencode-$version.tar.gz")
+        step("Downloading OpenCode $version", 0f)
+        Downloader.fetch(url, tgz, sha) { d, t -> step("Downloading OpenCode $version", frac(d, t), mb(d, t)) }
+        step("Installing OpenCode", 0f)
+        val tmp = File(paths.downloads, "oc-extract")
+        tmp.deleteRecursively()
+        TarExtractor.extract(tgz, tmp) { d, t -> step("Installing OpenCode", frac(d, t)) }
+        val bin = tmp.walkTopDown().firstOrNull { it.isFile && it.name == "opencode" } ?: error("No opencode binary in the archive")
+        paths.opencodeBin.parentFile?.mkdirs()
+        paths.opencodeBin.delete()
+        bin.copyTo(paths.opencodeBin, overwrite = true)
+        paths.opencodeBin.setExecutable(true, false)
+        tmp.deleteRecursively()
+        tgz.delete()
+        prefs.opencodeVersion = version
     }
 
-    /** The text-like files of the release bundle (launcher, JS): never the native libraries. */
-    private fun bundleFiles(): Sequence<File> = paths.bundleDir.walkTopDown()
-        .filter { it.isFile && it.length() < 40 * 1_000_000 && it.extension !in setOf("so", "node", "bin") }
-
-    private fun bundleHasPlaceholders(): Boolean = bundleFiles().any { f ->
-        runCatching { String(f.readBytes(), Charsets.ISO_8859_1).contains("@TERMUX_PREFIX@") }.getOrDefault(false)
-    }
-
-    /** The environment the native server runs with: XDG paths all live in the native home. */
-    private fun nativeEnv(): Map<String, String> = mapOf(
-        "HOME" to paths.nativeHome.path,
-        "XDG_CONFIG_HOME" to File(paths.nativeHome, ".config").path,
-        "XDG_DATA_HOME" to File(paths.nativeHome, ".local/share").path,
-        "XDG_STATE_HOME" to File(paths.nativeHome, ".local/state").path,
-        "XDG_CACHE_HOME" to File(paths.nativeHome, ".cache").path,
-        "TMPDIR" to paths.tmp.path,
-        "PATH" to "${paths.nativeBin.path}:/system/bin:/system/xbin",
-        "LD_LIBRARY_PATH" to "${paths.nativeLib.path}:${paths.nativeDir}",
-        "LANG" to "C.UTF-8",
-        "TERM" to "xterm-256color",
-        "SHELL" to "/system/bin/sh",
-        "OPENCODE_BUN" to File(paths.nativeBin, "bun").path,
-        "OPENCODE_ROOT" to paths.opencodeBundle.path,
-        "OPENCODE_DISABLE_AUTOUPDATE" to "true",
-    )
-
-    /** Runs a native binary directly (bun etc.): same guardrails as runGuest, no proot. */
-    private suspend fun runNative(
-        argv: List<String>,
-        timeoutSec: Long = 120,
-        onLine: (String) -> Unit = {},
-    ): Int = withContext(Dispatchers.IO) {
-        val env = nativeEnv()
-        val (p, viaRoot) = Root.spawnWithFallback(argv, env, paths.nativeHome.path) { pb -> pb.environment().putAll(env); pb.redirectErrorStream(true) }
-        if (viaRoot) logLine("started through su (root)")
-        val rd = launch { runCatching { p.inputStream.bufferedReader().forEachLine { onLine(it); logLine(it) } } }
-        val done = try { runInterruptible { p.waitFor(timeoutSec, TimeUnit.SECONDS) } } finally { if (p.isAlive) p.destroyForcibly() }
-        if (!done) { rd.cancel(); return@withContext -1 }
-        rd.join()
-        p.exitValue()
-    }
-
-    private suspend fun nativeSmokeTest() {
+    private suspend fun smokeTest() {
         step("Checking startup", null)
-        val out = StringBuilder()
-        val code = runNative(listOf(paths.opencodeNativeBin.path, "--version"), timeoutSec = 180) { out.appendLine(it) }
-        if (code != 0 || !Regex("\\d+\\.\\d+\\.\\d+").containsMatchIn(out.toString())) {
-            error("opencode does not start (code $code): ${out.toString().trim().takeLast(400)}")
+        suspend fun once(): Pair<Int, String> {
+            val out = StringBuilder()
+            val code = runGuest(listOf(OC_BIN, "--version"), timeoutSec = 120) { out.appendLine(it) }
+            return code to out.toString()
         }
-        logLine("opencode native: ${out.toString().trim()}")
+        var (code, out) = once()
+        if (code != 0 || !Regex("\\d+\\.\\d+\\.\\d+").containsMatchIn(out)) {
+            logLine("First launch failed (code $code), retrying in compatibility mode")
+            prefs.noSeccomp = true
+            val second = once()
+            code = second.first; out = second.second
+            if (code != 0 || !Regex("\\d+\\.\\d+\\.\\d+").containsMatchIn(out)) {
+                prefs.noSeccomp = false
+                error("opencode does not start (code $code): ${out.trim().takeLast(400)}")
+            }
+        }
+        logLine("opencode: ${out.trim()}")
     }
 
     private fun configureRootfs() {
@@ -287,36 +173,30 @@ class RuntimeController(
     // ---------- run ----------
 
     suspend fun supervise() = withContext(Dispatchers.IO) {
-        // Two loops (the service got recreated while the old loop was still winding down) take turns
-        // killing each other's server and crash-loop on "port 4096 in use". Only one may run.
-        if (!supervising.compareAndSet(false, true)) return@withContext
-        try {
-            superviseLoop()
-        } finally {
-            supervising.set(false)
-        }
-    }
-
-    private suspend fun superviseLoop() = withContext(Dispatchers.IO) {
         stopRequested = false
         var failures = 0
         var windowStart = System.currentTimeMillis()
         while (isActive && !stopRequested) {
             state.value = RuntimeState.Starting
-            // leftovers from the run before (or a crash) would keep the port: kill them first
-            freePort()
-            if (portBusy()) logLine("Port ${prefs.serverPort} is still busy, trying to start anyway")
-            val argv = listOf(paths.opencodeNativeBin.path, "serve", "--hostname", "127.0.0.1", "--port", prefs.serverPort)
-            val env = nativeEnv() + mapOf("OPENCODE_SERVER_PASSWORD" to prefs.serverPassword)
-            val (p, viaRoot) = try {
-                Root.spawnWithFallback(argv, env, paths.serverPath("/root/work")) { pb ->
-                    pb.environment().putAll(env); pb.redirectErrorStream(true)
-                }
-            } catch (e: Exception) {
+            // leftovers from the run before (or a crash) would keep the port: pkill -f opencode first
+            killLeftoverServer()
+            // a malformed chat DB makes the server crash on every start: move it aside so it can recreate one
+            quarantineCorruptDb()
+            var waited = 0
+            while (isActive && portBusy() && waited < 8_000) { delay(250); waited += 250 }
+            if (waited > 0) logLine("Waited ${waited}ms for the port to be free")
+            val pb = proot.processBuilder(
+                listOf(OC_BIN, "serve", "--hostname", "127.0.0.1", "--port", prefs.serverPort),
+                cwd = "/root/work",
+                extraEnv = mapOf(
+                    "OPENCODE_SERVER_PASSWORD" to prefs.serverPassword,
+                    "OPENCODE_DISABLE_AUTOUPDATE" to "true",
+                ),
+            )
+            val p = try { pb.start() } catch (e: Exception) {
                 state.value = RuntimeState.Crashed("Could not start the server: ${e.message}")
                 return@withContext
             }
-            if (viaRoot) logLine("Server started through su (root)")
             process = p
             val reader = launch { runCatching { p.inputStream.bufferedReader().forEachLine { logLine(it) } } }
             try {
@@ -364,60 +244,29 @@ class RuntimeController(
         state.value = RuntimeState.Stopped
     }
 
-    /**
-     * Free the server port before starting a new server.
-     * The previous `opencode serve` (or its bun process after a crash) holds the port, which crashed
-     * every new server with "Is port 4096 in use?". The /proc scan kills them, with su as fallback
-     * for a root-run server this app cannot signal.
-     */
-    private suspend fun freePort(attempts: Int = 3) {
-        for (i in 0 until attempts) {
-            if (!portBusy()) return
-            if (i > 0 || !waitPortFree(2_000)) {
-                logLine("Port ${prefs.serverPort} still busy, killing leftover server (attempt ${i + 1})")
-                killLeftoverJava()
-                if (waitPortFree(4_000)) return
-                Root.pidsOf("bun").filter { pid -> isLeftoverServer(pid) }.forEach { Root.kill(it) }
-                if (waitPortFree(2_000)) return
-            }
+    // ---------- chat DB integrity ----------
+
+    private fun dbHealthy(f: File): Boolean = runCatching {
+        SQLiteDatabase.openDatabase(f.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            db.rawQuery("PRAGMA quick_check", null).use { it.moveToFirst() && it.getString(0) == "ok" }
         }
-    }
+    }.getOrDefault(false)
 
-    private suspend fun waitPortFree(maxWaitMs: Long): Boolean {
-        var waited = 0
-        while (portBusy() && waited < maxWaitMs) { delay(250); waited += 250 }
-        return !portBusy()
-    }
-
-    /** True when [pid]'s cmdline is one of our server processes (bun running the bundle, or a proot-era leftover). */
-    private fun isLeftoverServer(pid: Int): Boolean {
-        val cmd = runCatching { java.io.File("/proc/$pid/cmdline").readBytes().decodeToString().replace('\u0000', ' ').trim() }.getOrDefault("")
-        return cmd.contains("lib/opencode/index.js") || cmd.contains("/usr/local/bin/opencode") || cmd.contains(paths.opencodeNativeBin.path)
-    }
-
-    /**
-     * Kills leftover server processes found by scanning /proc: the guest processes (and the native
-     * bun) run with this app's UID, so their cmdline is readable and they can be signalled directly.
-     */
-    private fun killLeftoverJava() {
-        runCatching {
-            for (p in java.io.File("/proc").listFiles() ?: emptyArray()) {
-                val pid = p.name.toIntOrNull() ?: continue
-                if (pid == android.os.Process.myPid()) continue
-                val cmd = runCatching { java.io.File(p, "cmdline").readBytes().decodeToString().replace('\u0000', ' ').trim() }.getOrDefault("")
-                if (cmd.isEmpty()) continue
-                // The bun server cmdline carries the bundle entry (lib/opencode/index.js); the legacy
-                // proot-era binary carried /usr/local/bin/opencode. Nothing else of ours matches.
-                if (cmd.contains("lib/opencode/index.js") || cmd.contains("/usr/local/bin/opencode") || cmd.contains(paths.opencodeNativeBin.path)) {
-                    val killed = runCatching { android.os.Process.killProcess(pid); true }.getOrDefault(false)
-                    if (!killed || isAlive(pid)) Root.kill(pid) // a root-run server answers only to su
-                    logLine("Killed leftover server process $pid: ${cmd.take(120)}")
+    /** Move a corrupt opencode.db (rootfs and vault copy) aside, with its -wal/-shm, so the server can start clean. */
+    fun quarantineCorruptDb() {
+        val rel = "root/.local/share/opencode/opencode.db"
+        listOf(paths.rootfs, File(paths.rootfs.parentFile, "vault")).forEach { base ->
+            runCatching {
+                val db = File(base, rel)
+                if (db.isFile && !dbHealthy(db)) {
+                    db.renameTo(File(db.path + ".corrupt-" + System.currentTimeMillis()))
+                    File(db.path + "-wal").delete()
+                    File(db.path + "-shm").delete()
+                    logLine("Corrupt chat DB moved aside: ${db.path}")
                 }
             }
         }
     }
-
-    private fun isAlive(pid: Int): Boolean = runCatching { java.io.File("/proc/$pid").exists() }.getOrDefault(false)
 
     /** The user stopped the server: then we don't start it when they come back to the app. */
     @Volatile var userStopped = false
@@ -438,11 +287,29 @@ class RuntimeController(
         }
     }
 
+    /**
+     * Stop leftover OpenCode processes inside the Ubuntu guest.
+     *
+     * Guest cleanup runs through pkill inside proot (or Root in root mode).
+     * The tracked proot client is stopped by requestStop(). Avoid desktop-JVM-only
+     * process enumeration APIs because they are unavailable on Android's runtime.
+     * The pattern is written `[o]pencode` so it doesn't match this command's own line.
+     */
+    fun killLeftoverServer() {
+        runCatching {
+            val p = proot.processBuilder(
+                listOf("/bin/sh", "-c", "pkill -f '[o]pencode'; i=0; while [ \$i -lt 15 ] && pgrep -f '[o]pencode' >/dev/null 2>&1; do sleep 0.2; i=\$((i+1)); done; pkill -9 -f '[o]pencode'; exit 0"),
+                cwd = "/root",
+            ).start()
+            if (!p.waitFor(10, TimeUnit.SECONDS)) p.destroyForcibly()
+        }
+    }
+
     fun requestStop() {
         stopRequested = true
         process?.destroy()
-        // in the background: scanning /proc and running su take a moment and this can be called from the main thread
-        Thread { killLeftoverJava() }.apply { isDaemon = true }.start()
+        // in the background: starting a proot takes a moment and this can be called from the main thread
+        Thread { killLeftoverServer() }.apply { isDaemon = true }.start()
     }
 
     /** Stop, wait until the port is really free, start again (Restart button). */
@@ -451,7 +318,7 @@ class RuntimeController(
         Thread {
             var waited = 0
             while (waited < 10_000 && (serverAlive || portBusy())) { Thread.sleep(200); waited += 200 }
-            killLeftoverJava()
+            killLeftoverServer()
             runCatching { beforeStart() }
             startServer()
         }.apply { isDaemon = true }.start()
@@ -505,11 +372,10 @@ class RuntimeController(
                 stopServer()
                 var waited = 0
                 while (waited < 10_000 && (serverAlive || portBusy())) { Thread.sleep(200); waited += 200 }
-                killLeftoverJava()
+                killLeftoverServer()
                 // The chat database is only consistent once the server has stopped writing.
                 Vault.save()
-                // Wipe the native runtime (bundle, termux debs, home). The proot rootfs stays: 9Router runs in it.
-                paths.native.deleteRecursively()
+                paths.rootfs.deleteRecursively()
                 paths.downloads.deleteRecursively()
                 prefs.runtimeReady = false
             } finally {

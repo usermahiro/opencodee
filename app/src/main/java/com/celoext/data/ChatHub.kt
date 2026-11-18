@@ -228,9 +228,6 @@ class ChatHub(private val api: OpenCodeApi, private val events: EventHub, privat
             "permission.replied" -> p.str("requestID")?.let { rid -> permissions.update { l -> l.filterNot { it.id == rid } } }
             "question.asked" -> {
                 val q = parseQuestion(p)
-                // The event payload is the raw form JSON: cache it so the reply can map the
-                // answers onto the field keys (GET /api/form may not run before the user answers).
-                runCatching { api.cacheForm(p) }
                 questions.update { l -> l.filterNot { it.id == q.id } + q }
             }
             "question.replied", "question.rejected" -> p.str("requestID")?.let { rid -> questions.update { l -> l.filterNot { it.id == rid } } }

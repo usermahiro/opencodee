@@ -170,8 +170,7 @@ fun ServerScreen(nav: Nav) {
             SettingsGroup {
                 SettingsRow("Start with the app", icon = Ic.Zap, trailing = { OcSwitch(prefs.autoStartServer) { prefs.autoStartServer = it } })
                 SettingsRow("Keep CPU awake while running", icon = Ic.Server, trailing = { OcSwitch(prefs.keepAwake) { prefs.keepAwake = it } })
-                SettingsRow("Compatibility mode", subtitle = "Proot fallback for 9router if its processes get killed", icon = Ic.Shield, trailing = { OcSwitch(prefs.noSeccomp) { prefs.noSeccomp = it; Graph.runtime.restartServer() } })
-                SettingsRow("Root access (su)", subtitle = "When a file is locked down, retry through KernelSU/Magisk so any folder works", icon = Ic.Shield, trailing = { OcSwitch(prefs.rootFallback) { prefs.rootFallback = it } })
+                SettingsRow("Compatibility mode", subtitle = "Try this if the server keeps crashing on your phone", icon = Ic.Shield, trailing = { OcSwitch(prefs.noSeccomp) { prefs.noSeccomp = it; Graph.runtime.restartServer() } })
                 // Android 12+ kills "extra" child processes of apps (phantom process killer), and proot has many
                 SettingsRow("Server keeps stopping?", subtitle = "Developer options → turn on “Disable child process restrictions”", icon = Ic.Info, onClick = {
                     runCatching { ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }

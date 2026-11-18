@@ -8,7 +8,6 @@ activity = "1.13.0"
 okhttp = "5.5.1"
 coil = "3.6.3"
 junit = "4.13.2"
-xz = "1.10"
 
 [libraries]
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
@@ -22,8 +21,6 @@ okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-network = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
 junit = { module = "junit:junit", version.ref = "junit" }
-# Pure-Java xz decompressor: Termux packages (.deb) ship data.tar.xz, used by the native install
-xz-java = { module = "org.tukaani:xz", version.ref = "xz" }
 # QR scanner from Google Play services: no camera permission, the system provides the scanner UI
 gms-code-scanner = { module = "com.google.android.gms:play-services-code-scanner", version = "16.1.0" }
 # Play services pull in fragment 1.0.0, too old for registerForActivityResult (lint error in release builds)

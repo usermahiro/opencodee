@@ -69,16 +69,13 @@ object FreeModels {
         }
     }
 
-    /** Opens the mode bits on the config folders. The files are app-owned (native home), so chmod
-     *  from the app side; su is the fallback when something else owns them. True when it ran. */
-    private fun fixConfigPerms(): Boolean = runCatching {
-        for (dir in listOf("/root/.config/opencode", "/root/.local/share/opencode")) {
-            val f = Graph.paths.host(dir)
-            f.mkdirs()
-            f.walkTopDown().forEach { runCatching { it.setReadable(true, false); it.setWritable(true, false); it.setExecutable(true, false) } }
-            if (!f.canWrite()) com.celoext.runtime.Root.openForApp(f)
-        }
-        true
+    /** Opens the mode bits on the config folders from inside the environment. True when it ran. */
+    private suspend fun fixConfigPerms(): Boolean = runCatching {
+        val rc = Graph.runtime.runGuest(
+            listOf("/bin/bash", "-c", "mkdir -p /root/.config/opencode /root/.local/share/opencode; chmod -R a+rwX /root/.config/opencode /root/.local/share/opencode; true"),
+            timeoutSec = 30,
+        )
+        rc == 0
     }.getOrDefault(false)
 
     /** Drops line and block comments (outside strings) and trailing commas so a .jsonc file can be parsed. */
@@ -165,9 +162,7 @@ object FreeModels {
 
     suspend fun finish(providerId: String, modelId: String) {
         runCatching { Graph.api.disposeAll() }
-        // The server reloads the config asynchronously: poll until /api/provider really lists the
-        // provider, otherwise the Connected section only updates after the next app start.
-        runCatching { Graph.catalog.awaitProvider(providerId) }
+        runCatching { Graph.catalog.refresh() }
         Graph.prefs.providerId = providerId; Graph.prefs.modelId = modelId; Graph.prefs.variant = ""
         Vault.save()
     }

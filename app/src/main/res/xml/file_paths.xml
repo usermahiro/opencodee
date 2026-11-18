@@ -3,6 +3,4 @@
     <cache-path name="camera" path="camera/" />
     <files-path name="export" path="export/" />
     <files-path name="rootfs" path="rootfs/" />
-    <!-- /root of the native runtime: projects, uploads and the agent's outbox -->
-    <files-path name="native_home" path="native/home/" />
 </paths>

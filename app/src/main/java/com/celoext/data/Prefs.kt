@@ -115,8 +115,6 @@ class Prefs(ctx: Context) {
     var keepAwake by bool("keep_awake", true)
     var autoStartServer by bool("auto_start", true)
     var noSeccomp by bool("no_seccomp", false)
-    /** Permission-denied retries through su (KernelSU/Magisk): any folder becomes usable with root granted. */
-    var rootFallback by bool("root_fallback", true)
     var runtimeReady by bool("runtime_ready", false)
     var opencodeVersion by str("opencode_version", "")
 

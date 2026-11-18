@@ -49,11 +49,6 @@ class ProotCommand(private val paths: RuntimePaths, private val prefs: Prefs) {
             "--bind=${paths.fake}/version:/proc/version",
             "--bind=${File(paths.rootfs, "tmp")}:/dev/shm",
         )
-        // The native server's home is the guest /root as well, so the shell tools (backup tar,
-        // git config, chmod) work on exactly the same files as the native OpenCode process.
-        if (paths.nativeHome.isDirectory) {
-            cmd += "--bind=${paths.nativeHome}:/root"
-        }
         // Internal storage: same path as on the host and as /sdcard (needs the storage permission).
         if (File(SHARED_STORAGE).exists()) {
             cmd += "--bind=$SHARED_STORAGE"

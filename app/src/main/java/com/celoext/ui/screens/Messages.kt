@@ -531,22 +531,10 @@ fun QuestionPanel(q: QuestionReq, directory: String?) {
     fun done() { Graph.chats.questions.value = Graph.chats.questions.value.filterNot { it.id == q.id } }
     fun submit() {
         val answers = q.questions.indices.map { i -> picked[i].toList() + listOfNotNull(custom[i].value.trim().takeIf { it.isNotEmpty() }) }
-        scope.launch {
-            // Only close the panel once the server really took the answer; on failure the
-            // question comes back on the next refresh, so tell the user instead of losing it.
-            runCatching { Graph.api.replyQuestion(q.id, directory, answers, q.sessionID) }
-                .onSuccess { done() }
-                .onFailure { e -> Graph.chats.toasts.tryEmit((e.message ?: "Could not send the answer").take(120)) }
-        }
+        done(); scope.launch { runCatching { Graph.api.replyQuestion(q.id, directory, answers, q.sessionID) } }
     }
     fun next() { if (page < q.questions.lastIndex) page++ else submit() }
-    fun skip() {
-        scope.launch {
-            runCatching { Graph.api.rejectQuestion(q.id, directory, q.sessionID) }
-                .onSuccess { done() }
-                .onFailure { e -> Graph.chats.toasts.tryEmit((e.message ?: "Could not skip the question").take(120)) }
-        }
-    }
+    fun skip() { done(); scope.launch { runCatching { Graph.api.rejectQuestion(q.id, directory, q.sessionID) } } }
     val typed = custom[page].value.isNotBlank()
 
     Column(

@@ -32,7 +32,7 @@ object Downloader {
     private fun fetchOnce(url: String, dest: File, sha256: String?, onProgress: (done: Long, total: Long) -> Unit) {
         dest.parentFile?.mkdirs()
         // A cached file is reused only when its checksum is known and matches (without one it may be stale or partial).
-        if (dest.exists() && sha256 != null && sha256Of(dest).equals(sha256, ignoreCase = true)) {
+        if (dest.exists() && sha256 != null && sha256Of(dest) == sha256) {
             onProgress(dest.length(), dest.length()); return
         }
         val part = File(dest.path + ".part")
@@ -84,8 +84,6 @@ object Downloader {
                 val got = sha256Of(part)
                 if (!got.equals(sha256, ignoreCase = true)) {
                     part.delete()
-                    // A resumed tail glued onto a bad leftover: retry once from zero (fetch() retries IOExceptions).
-                    if (resumed) throw java.io.IOException("Checksum mismatch after resuming ${dest.name}, restarting from zero")
                     error("Checksum mismatch for ${dest.name}: $got")
                 }
             }

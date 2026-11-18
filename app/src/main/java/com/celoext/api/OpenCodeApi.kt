@@ -111,13 +111,8 @@ class OpenCodeApi(private val prefs: Prefs) {
         return msg ?: "HTTP $code" + body.take(200).let { if (it.isBlank()) "" else ": $it" }
     }
 
-    // Directory arguments: the app stores the classic /root layout everywhere, the native server
-    // sees its real Android home, so translate on the way in and back on the way out. A remote
-    // device keeps its own layout untouched.
-    private fun dir(d: String?) = if (d.isNullOrBlank()) emptyMap()
-        else mapOf("directory" to if (Graph.devices.isRemote) d else Graph.paths.serverPath(d))
-    private fun loc(d: String?) = if (d.isNullOrBlank()) emptyMap()
-        else mapOf("location[directory]" to if (Graph.devices.isRemote) d else Graph.paths.serverPath(d))
+    private fun dir(d: String?) = if (d.isNullOrBlank()) emptyMap() else mapOf("directory" to d)
+    private fun loc(d: String?) = if (d.isNullOrBlank()) emptyMap() else mapOf("location[directory]" to d)
 
     // ---------- server ----------
 
@@ -171,7 +166,7 @@ class OpenCodeApi(private val prefs: Prefs) {
 
     suspend fun createSession(directory: String, title: String? = null, permission: JsonArray? = null): Session {
         val body = buildJsonObject {
-            putJsonObject("location") { put("directory", if (Graph.devices.isRemote) directory else Graph.paths.serverPath(directory)) }
+            putJsonObject("location") { put("directory", directory) }
             title?.let { put("title", it) }
             permission?.let { put("permissions", it) }
         }
@@ -343,17 +338,9 @@ class OpenCodeApi(private val prefs: Prefs) {
     }
 
     suspend fun replyQuestion(requestId: String, directory: String?, answers: List<List<String>>, sessionId: String? = null) {
-        // The form usually arrives over SSE (question.asked) and is then never fetched, so the
-        // cache can be empty here. GET /api/form fills it; without the fields the answer would be
-        // an empty object, which the server accepts (204) and the agent sees as "no answer".
-        var form = formCache[requestId]
-        if (form == null) {
-            runCatching { questions(directory) }
-            form = formCache[requestId]
-        }
+        val form = formCache[requestId]
         val sid = sessionId ?: form?.str("sessionID") ?: return
         val fields = form?.arr("fields").orEmpty()
-        if (fields.isEmpty()) throw ApiException(404, "The question is no longer open")
         val answerMap = buildJsonObject {
             fields.forEachIndexed { idx, fEl ->
                 val f = fEl as? JsonObject ?: return@forEachIndexed
@@ -362,8 +349,7 @@ class OpenCodeApi(private val prefs: Prefs) {
                 val given = answers.getOrNull(idx).orEmpty()
                 when (type) {
                     "multiselect" -> putJsonArray(key) { given.forEach { add(JsonPrimitive(it)) } }
-                    // The panel collects free text for booleans too: accept the usual spellings.
-                    "boolean" -> put(key, given.firstOrNull()?.let { it.equals("true", true) || it.equals("yes", true) || it.equals("ya", true) || it == "1" } ?: false)
+                    "boolean" -> put(key, given.firstOrNull() == "true")
                     "number", "integer" -> put(key, given.firstOrNull()?.toDoubleOrNull() ?: 0)
                     else -> put(key, given.firstOrNull() ?: "")
                 }
@@ -372,12 +358,6 @@ class OpenCodeApi(private val prefs: Prefs) {
         call("POST", "/api/session/$sid/form/$requestId/reply", loc(directory), buildJsonObject {
             put("answer", answerMap)
         })
-    }
-
-    /** Remembers the raw form JSON behind a `question.asked` event, so replyQuestion can map the answers onto the field keys. */
-    fun cacheForm(form: JsonObject) {
-        val id = form.str("id") ?: return
-        if (id.startsWith("frm_")) formCache[id] = form
     }
 
     suspend fun rejectQuestion(requestId: String, directory: String?, sessionId: String? = null) {
@@ -460,25 +440,6 @@ class OpenCodeApi(private val prefs: Prefs) {
                 cObj.str("id")?.let { cid -> call("DELETE", "/api/credential/$cid") }
             }
         }
-    }
-
-    /**
-     * Fully disconnects a provider. Removing the stored credentials alone is not enough for custom
-     * providers: their block in the global config (`providers.<id>` with the key inline) keeps them
-     * connected, so it is removed from the config document as well, then the server reloads it.
-     */
-    suspend fun removeProvider(providerId: String) = configMutex.withLock {
-        val (docPath, info) = configDocument()
-        val blocks = info.obj("providers")
-        if (blocks?.containsKey(providerId) == true) {
-            val rest = blocks.toMutableMap().apply { remove(providerId) }
-            val doc = info.toMutableMap()
-            if (rest.isEmpty()) doc.remove("providers") else doc["providers"] = JsonObject(rest)
-            callRaw("/api/experimental/fs/write", mapOf("path" to docPath), JsonObject(doc).toString().toByteArray(Charsets.UTF_8))
-            runCatching { call("POST", "/api/location/reload") }
-        }
-        runCatching { removeAuth(providerId) }
-        disposeAll()
     }
 
     suspend fun oauthAuthorize(providerId: String, method: Int, inputs: Map<String, String> = emptyMap()): JsonObject {
@@ -667,12 +628,9 @@ class OpenCodeApi(private val prefs: Prefs) {
         })
     }
 
-    /** The server's working directory, shown back to the user in the classic /root form. */
     suspend fun serverDirectory(): String? {
         val res = call("GET", "/api/location") as? JsonObject
-        return res?.str("directory")?.let { p ->
-            runCatching { Graph.paths.clientPath(p) }.getOrDefault(p)
-        }
+        return res?.str("directory")
     }
 
     suspend fun projects(): JsonArray {
@@ -691,6 +649,6 @@ class OpenCodeApi(private val prefs: Prefs) {
 internal fun configFilePath(entries: List<JsonObject>): String {
     entries.firstOrNull { it.str("type") == "document" }?.str("path")?.takeIf { it.isNotBlank() }?.let { return it }
     val dir = entries.firstOrNull { it.str("type") == "directory" }?.str("path")?.takeIf { it.isNotBlank() }
-        ?: runCatching { com.celoext.Graph.paths.serverPath("/root/.config/opencode") }.getOrDefault("/root/.config/opencode")
+        ?: "/root/.config/opencode"
     return java.io.File(dir, "opencode.json").path
 }

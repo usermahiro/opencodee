@@ -212,10 +212,7 @@ fun JsonObject.bool(k: String): Boolean? = (this[k] as? JsonPrimitive)?.booleanO
 
 fun parseSession(o: JsonObject): Session {
     val loc = o.obj("location")
-    // The server reports its real Android home; the app speaks /root everywhere.
-    val dir = (loc?.str("directory") ?: o.str("directory") ?: "").let { p ->
-        runCatching { com.celoext.Graph.paths.clientPath(p) }.getOrDefault(p)
-    }
+    val dir = loc?.str("directory") ?: o.str("directory") ?: ""
     val timeObj = o.obj("time")
     val time = if (timeObj != null) {
         TimeInfo(

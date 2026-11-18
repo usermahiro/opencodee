@@ -50,13 +50,7 @@ import java.io.File
 
 /** What to give Coil: guest Linux files live inside the rootfs on the host. */
 fun imageModel(url: String): Any =
-    if (url.startsWith("file://")) fileUrlToHost(url) else url
-
-/** A file:// url as the agent wrote it (real Android path or the classic /root form) → the file on this phone. */
-internal fun fileUrlToHost(url: String): File {
-    val p = Uri.parse(url).path ?: ""
-    return Graph.paths.host(runCatching { Graph.paths.clientPath(p) }.getOrDefault(p))
-}
+    if (url.startsWith("file://")) Graph.paths.host(Uri.parse(url).path ?: "") else url
 
 fun imageBytes(url: String): ByteArray? = runCatching {
     when {
@@ -65,7 +59,7 @@ fun imageBytes(url: String): ByteArray? = runCatching {
             if (b64.length > 14_000_000) null else Base64.decode(b64, Base64.DEFAULT)
         }
         url.startsWith("file://") -> {
-            val f = fileUrlToHost(url)
+            val f = Graph.paths.host(Uri.parse(url).path ?: "")
             if (!f.isFile || f.length() > 16_000_000) null else f.readBytes()
         }
         else -> null
@@ -139,7 +133,7 @@ private fun writeUrlTo(ctx: Context, url: String, out: java.io.OutputStream): Bo
             true
         }
         url.startsWith("file://") -> {
-            val f = fileUrlToHost(url)
+            val f = Graph.paths.host(Uri.parse(url).path ?: "")
             if (!f.isFile || f.length() > 64_000_000) return false
             f.inputStream().use { it.copyTo(out, 1 shl 16) }
             true

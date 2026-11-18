@@ -125,7 +125,7 @@ fun ProvidersScreen(nav: Nav) {
             disconnect = null
             scope.launch {
                 if (id == com.celoext.data.FreeModels.COPILOT_ID || id == com.celoext.data.FreeModels.POLLINATIONS_ID) com.celoext.data.FreeModels.disable(id)
-                else runCatching { Graph.api.removeProvider(id) }
+                else runCatching { Graph.api.removeAuth(id); Graph.api.disposeAll() }
                 Graph.catalog.refresh(); load()
             }
         }, danger = true) { Txt("Stored credentials for this provider are removed from the phone.", size = 16.sp, color = Oc.c.textDim) }
@@ -150,7 +150,7 @@ private fun ConnectSheet(p: AllProvider, onDone: () -> Unit) {
         methods = runCatching { Graph.api.providerAuthMethods()[p.id] }.getOrNull().orEmpty().ifEmpty { listOf(AuthMethod("key", "API key")) }
     }
 
-    fun finish() { scope.launch { runCatching { Graph.api.disposeAll() }; Graph.catalog.awaitProvider(p.id); Graph.chats.toasts.tryEmit("${p.name} connected"); onDone() } }
+    fun finish() { scope.launch { runCatching { Graph.api.disposeAll() }; Graph.catalog.refresh(); Graph.chats.toasts.tryEmit("${p.name} connected"); onDone() } }
 
     OcSheet(onDone, p.name.ifBlank { p.id }, skipHalf = false) {
         Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

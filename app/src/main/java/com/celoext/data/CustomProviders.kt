@@ -25,35 +25,39 @@ object CustomProviders {
         val fallbackModels: List<Pair<String, Int>> = emptyList(),
     )
 
-    // The gateway prefixes every id with the upstream it routes to (kamihub/…, atmoro/…, gpt/…), and
-    // rejects the bare name with a 500. The list is only a fallback for when /models itself fails.
+    // The gateway prefixes every id with the upstream it routes to ("atmoro/…"), and rejects the bare name
+    // with a 500. The list is only a fallback for when /models itself fails.
     val KAMIHUB = Preset(
         id = "kamihub",
         name = "Kamihub",
         baseUrl = "https://kamihub.us.ci/v1",
-        exampleModel = "kamihub/deepseek-v4.1-flash",
-        preferredModel = "kamihub/deepseek-v4.1-flash",
+        exampleModel = "atmoro/alicn/deepseek-v4.1-flash",
+        preferredModel = "discovery/Atria-Dawn",
         fallbackModels = listOf(
-            "kamihub/solar-mini4" to 128_000,
-            "kamihub/longcat-2-5" to 128_000,
-            "kamihub/deepseek-v4.1-flash" to 128_000,
-            "kamihub/ernie-5-5-flash" to 128_000,
-            "kamihub/kilo-auto" to 128_000,
-            "atmoro/combo/pro" to 128_000,
-            "atmoro/combo/glm-5-3-flash-ultra" to 1_000_000,
-            "atmoro/cb/deepseek-v4.1-flash" to 128_000,
-            "atmoro/mimotp/mimo-v2.6-flash" to 128_000,
-            "atmoro/zai/glm-5.3-flash" to 1_000_000,
-            "atmoro/zai/glm-4.6v" to 128_000,
-            "atmoro/mm/MiniMax-M2.1" to 200_000,
-            "atmoro/mm/MiniMax-M3.1-Flash" to 1_000_000,
-            "atmoro/ali/kimi-k2.7-code" to 200_000,
-            "atmoro/atmoro/ali/qwen3.8-max" to 128_000,
+            "atmoro/alicn/deepseek-v4.1-flash" to 128_000,
+            "atmoro/atmo/deepseek-v4.1-flash" to 128_000,
+            "atmoro/alicn/deepseek-v4-flash-0731" to 128_000,
+            "atmoro/alicn/deepseek-v4-pro-0813" to 128_000,
+            "atmoro/alicn/qwen3.8-flash" to 128_000,
+            "atmoro/alicn/qwen3.8-omni-flash" to 128_000,
+            "atmoro/alicn/qwen3.8-max" to 128_000,
+            "atmoro/alicn/qwen3.8-max-0902" to 128_000,
+            "atmoro/alicn/kimi-k2.6" to 200_000,
+            "atmoro/alicn/glm-5.2" to 128_000,
+            "atmoro/ag/claude-sonnet-4-6" to 1_000_000,
             "atmoro/cx/gpt-6-luna" to 128_000,
             "atmoro/mai/muse-spark-1.3-contributor" to 128_000,
-            "gpt/gpt-5.6-sol" to 128_000,
-            "gpt/gpt-6-astra" to 128_000,
-            "gpt/gpt-6.1-sol" to 128_000,
+            "atmoro/mm/MiniMax-M2.1" to 200_000,
+            "atmoro/mm/MiniMax-M3" to 200_000,
+            "atmoro/mm/MiniMax-M3.1-Flash" to 1_000_000,
+            "atmoro/zai/glm-4.6v" to 128_000,
+            "atmoro/zai/glm-5.3" to 128_000,
+            "atmoro/zai/glm-5.3-flash" to 1_000_000,
+            "discovery/Agents-A1" to 128_000,
+            "discovery/Atria-Dawn" to 128_000,
+            "discovery/Atria-Dawn-Preview" to 128_000,
+            "discovery/intern-s2" to 128_000,
+            "discovery/Sage-A1.5" to 128_000,
         ),
     )
 
@@ -89,18 +93,11 @@ object CustomProviders {
         val candidates = (listOf(p.preferredModel, p.exampleModel) + ids).distinct().take(5)
         var chosen: String? = null
         var lastError: String? = null
-        var forbidden = 0
         for (id in candidates) {
             val r = probeChat(p, key, id)
             if (r == null) { chosen = id; break }
-            // A wrong key must stop here. But 403 ("this model is not allowed for the key") only
-            // rules out one model: keep probing the rest, the gateway may allow others.
-            if (r.startsWith("unauthorized")) error("${p.name} refused the API key (HTTP 401)")
-            if (r.startsWith("forbidden")) forbidden++
+            if (r.startsWith("refused")) error("${p.name} ${r}")
             lastError = "$id: $r"
-        }
-        if (chosen == null && forbidden == candidates.size) {
-            error("${p.name}: none of the candidate models is allowed for this key (HTTP 403). Check the model allowlist of the key in its dashboard.")
         }
         val model = chosen ?: p.preferredModel
         // The chosen model must exist in the registered list even when /models didn't return it.
@@ -138,14 +135,7 @@ object CustomProviders {
             val code = c.responseCode
             if (code in 200..299) return null
             val text = runCatching { c.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty() }.getOrDefault("").trim().replace(Regex("\\s+"), " ").take(120)
-            // 401 means the key itself is wrong; 403 usually means the key is valid but this
-            // model is not on its allowlist (Kamihub: "Model ... tidak diizinkan untuk API key ini"),
-            // so the caller can still try the other candidates.
-            when (code) {
-                401 -> return "unauthorized (HTTP 401)"
-                403 -> return "forbidden (HTTP 403)" + if (text.isBlank()) "" else ": $text"
-                else -> return "HTTP $code" + if (text.isBlank()) "" else " $text"
-            }
+            if (code == 401 || code == 403) "refused the API key (HTTP $code)" else "HTTP $code" + if (text.isBlank()) "" else " $text"
         } catch (e: Exception) {
             e.message ?: e.javaClass.simpleName
         } finally {

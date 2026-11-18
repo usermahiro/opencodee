@@ -25,11 +25,11 @@ class Catalog(private val api: OpenCodeApi, private val prefs: Prefs, private va
     suspend fun refresh() {
         runCatching {
             val r = api.connectedProviders()
-            // Server warming up returns [] for a few seconds. Never wipe a good list with an empty one,
-            // but when the server answers for real its list is authoritative: a provider that is gone
-            // (disconnected) has to disappear from here at once, or Disconnect looks like it does nothing.
+            // Server warming up returns [] for a few seconds. Never wipe a good list with an empty one.
             if (r.providers.isNotEmpty()) {
-                providers.value = r.providers.sortedWith(compareBy({ rank(it.id) }, { it.name }))
+                val kept = providers.value.associateBy { it.id }
+                val merged = (r.providers + providers.value.filter { it.id !in r.providers.map { p -> p.id } })
+                providers.value = merged.sortedWith(compareBy({ rank(it.id) }, { it.name }))
                 defaults = r.default.ifEmpty { defaults }
                 loaded.value = true
             } else if (providers.value.isEmpty()) {
@@ -51,21 +51,6 @@ class Catalog(private val api: OpenCodeApi, private val prefs: Prefs, private va
         providers.value.firstOrNull { it.id == providerId }?.models?.get(modelId)
 
     fun provider(id: String): ProviderInfo? = providers.value.firstOrNull { it.id == id }
-
-    /**
-     * After a connect, the server reloads its config asynchronously and /api/provider keeps answering
-     * the old list for a few seconds: poll until the provider shows up, so the Connected section
-     * updates right away instead of after the next app start.
-     */
-    suspend fun awaitProvider(id: String, timeoutMs: Long = 12_000): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            refresh()
-            if (provider(id) != null) return true
-            kotlinx.coroutines.delay(600)
-        }
-        return provider(id) != null
-    }
 
     /** If the selected model is gone (first launch or the provider was disconnected), take the best available one. */
     private fun ensureSelection() {

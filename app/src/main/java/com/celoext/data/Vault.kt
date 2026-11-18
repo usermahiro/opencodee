@@ -18,9 +18,6 @@ object Vault {
     private const val CONFIG_JSON = "root/.config/opencode/opencode.json"
     private const val MEMORY = "root/memory"
 
-    /** The on-device copy of a vault entry: /root/... lives in the native home, not inside the rootfs. */
-    private fun live(rel: String): File = Graph.paths.host("/" + rel)
-
     private fun copyIfNewer(from: File, to: File) {
         if (!from.isFile) return
         if (to.isFile && to.length() == from.length() && to.lastModified() >= from.lastModified()) return
@@ -33,10 +30,32 @@ object Vault {
     fun save() {
         saveLight()
         runCatching {
-            // The chat database is SQLite: copy it only when the server is not writing (stop/reset/backup).
-            copyIfNewer(live(DB), File(root, DB))
-            copyIfNewer(live("$DB-wal"), File(root, "$DB-wal"))
-            copyIfNewer(live("$DB-shm"), File(root, "$DB-shm"))
+            // The chat DB is SQLite (WAL): copy it only while the server is stopped, as a consistent pair
+            // (db + wal, never shm), and only if the copy is healthy, so a good backup is never replaced by a broken one.
+            if (Graph.runtime.serverAlive) return@runCatching
+            val rf = Graph.paths.rootfs
+            val src = File(rf, DB)
+            if (!src.isFile) return@runCatching
+            val tmp = File(root, "$DB.tmp")
+            val tmpWal = File(tmp.path + "-wal")
+            tmp.parentFile?.mkdirs()
+            src.copyTo(tmp, overwrite = true)
+            val wal = File(rf, "$DB-wal")
+            if (wal.isFile && wal.length() > 0) wal.copyTo(tmpWal, overwrite = true) else tmpWal.delete()
+            val ok = runCatching {
+                android.database.sqlite.SQLiteDatabase.openDatabase(tmp.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY).use { db ->
+                    db.rawQuery("PRAGMA quick_check", null).use { it.moveToFirst() && it.getString(0) == "ok" }
+                }
+            }.getOrDefault(false)
+            File(tmp.path + "-shm").delete()
+            if (ok) {
+                val dst = File(root, DB)
+                File(dst.path + "-shm").delete()
+                File(dst.path + "-wal").delete()
+                tmp.copyTo(dst, overwrite = true)
+                if (tmpWal.isFile) tmpWal.copyTo(File(dst.path + "-wal"), overwrite = true)
+            }
+            tmp.delete(); tmpWal.delete()
         }
     }
 
@@ -47,38 +66,39 @@ object Vault {
      */
     fun saveLight() {
         runCatching {
-            val auth = live(AUTH)
+            val rf = Graph.paths.rootfs
+            val auth = File(rf, AUTH)
             if (auth.isFile && auth.length() > 2 && runCatching { JSONObject(auth.readText()).length() > 0 }.getOrDefault(false)) copyIfNewer(auth, File(root, AUTH))
-            copyIfNewer(live(RULES), File(root, RULES))
-            copyIfNewer(live(CONFIG), File(root, CONFIG))
-            copyIfNewer(live(CONFIG_JSON), File(root, CONFIG_JSON))
-            live(MEMORY).listFiles()?.forEach { copyIfNewer(it, File(root, "$MEMORY/${it.name}")) }
+            copyIfNewer(File(rf, RULES), File(root, RULES))
+            copyIfNewer(File(rf, CONFIG), File(root, CONFIG))
+            copyIfNewer(File(rf, CONFIG_JSON), File(root, CONFIG_JSON))
+            File(rf, MEMORY).listFiles()?.forEach { copyIfNewer(it, File(root, "$MEMORY/${it.name}")) }
         }
     }
 
     /** From the vault to the rootfs: overwrite stale/placeholder files so keys come back after reinstall. */
     fun restore() {
         runCatching {
+            val rf = Graph.paths.rootfs
             fun back(rel: String) {
-                val v = File(root, rel); val t = live(rel)
+                val v = File(root, rel); val t = File(rf, rel)
                 if (!v.isFile) return
                 // Server creates placeholder auth.json/config on first start. Copying only when target is
                 // missing leaves that placeholder and providers look "gone" until user re-enters keys.
                 val tEmpty = !t.isFile || t.length() <= 2 || runCatching { JSONObject(t.readText()).length() == 0 }.getOrDefault(false)
                 val vUseful = v.length() > 2 && runCatching { JSONObject(v.readText()).length() > 0 }.getOrDefault(false)
-                // Never replace anything with an empty/placeholder copy; otherwise restore when the target is gone, empty or older.
-                if (vUseful && (!t.isFile || tEmpty || v.lastModified() >= t.lastModified())) { t.parentFile?.mkdirs(); v.copyTo(t, overwrite = true) }
+                if (!t.isFile || v.lastModified() >= t.lastModified() || (tEmpty && vUseful) || !tEmpty && !vUseful) { t.parentFile?.mkdirs(); v.copyTo(t, overwrite = true) }
             }
             fun backText(rel: String) {
-                val v = File(root, rel); val t = live(rel)
+                val v = File(root, rel); val t = File(rf, rel)
                 if (!v.isFile) return
                 if (!t.isFile || v.lastModified() >= t.lastModified() || t.length() == 0L) { t.parentFile?.mkdirs(); v.copyTo(t, overwrite = true) }
             }
             back(AUTH)
             backText(RULES); backText(CONFIG); backText(CONFIG_JSON)
             // DB only when target missing: copying over a live DB could corrupt chats.
-            fun backDb(rel: String) { val v = File(root, rel); val t = live(rel); if (v.isFile && !t.isFile) { t.parentFile?.mkdirs(); v.copyTo(t) } }
-            backDb(DB); backDb("$DB-wal"); backDb("$DB-shm")
+            fun backDb(rel: String) { val v = File(root, rel); val t = File(rf, rel); if (v.isFile && !t.isFile) { t.parentFile?.mkdirs(); v.copyTo(t) } }
+            backDb(DB); backDb("$DB-wal")
             File(root, MEMORY).listFiles()?.forEach { backText("$MEMORY/${it.name}") }
         }
     }
@@ -95,7 +115,7 @@ object Vault {
     fun reconcileAccount() {
         runCatching {
             if (Graph.prefs.signedIn.isNotBlank()) return
-            val f = live(AUTH)
+            val f = File(Graph.paths.rootfs, AUTH)
             if (!f.isFile) return
             val keys = JSONObject(f.readText()).keys().asSequence().toSet()
             val m = when {

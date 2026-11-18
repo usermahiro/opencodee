@@ -179,10 +179,9 @@ object PhoneBridge {
     )
 
     private fun servePreview(out: OutputStream, guest: String) {
-        // The agent passes real Android paths (its home is the native home); the classic /root form works too.
-        val roots = listOf(Graph.paths.rootfs, Graph.paths.nativeHome).map { it.canonicalFile }
-        var f = Graph.paths.host(runCatching { Graph.paths.clientPath(guest) }.getOrDefault(guest)).canonicalFile
-        if (roots.none { f.path == it.path || f.path.startsWith(it.path + File.separator) }) return respond(out, 404, "text/plain", ByteArray(0))
+        val root = Graph.paths.host("/").canonicalFile
+        var f = Graph.paths.host(guest).canonicalFile
+        if (f.path != root.path && !f.path.startsWith(root.path + File.separator)) return respond(out, 404, "text/plain", ByteArray(0))
         if (f.isDirectory) f = File(f, "index.html")
         if (!f.isFile) return respond(out, 404, "text/plain", "not found".toByteArray())
         // stream the file instead of loading it whole (a big video would run the app out of memory)
@@ -346,11 +345,8 @@ object PhoneBridge {
         val shot = withTimeoutOrNull(180_000) { d.await() } ?: error("No photo was taken.")
         val name = "photo-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".jpg"
         val dest = File(Graph.paths.host(dir), name).apply { parentFile?.mkdirs() }
-        // A save folder outside the app sandbox (an OEM-blocked storage area) can throw EACCES: chmod through su, then retry.
-        com.celoext.runtime.Root.withRetry(dest) { shot.copyTo(dest, overwrite = true) }
-        shot.delete()
-        // The native agent can't see /root: report the path in its own view.
-        return "Saved ${com.celoext.Graph.paths.serverPath(dir.trimEnd('/'))}/$name"
+        shot.copyTo(dest, overwrite = true); shot.delete()
+        return "Saved ${dir.trimEnd('/')}/$name"
     }
 
     private fun saveToDownloads(guest: String): String {
