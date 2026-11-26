@@ -253,7 +253,18 @@ class ChatHub(private val api: OpenCodeApi, private val events: EventHub, privat
             "session.created", "session.updated" -> p.obj("info")?.let { infoObj ->
                 runCatching { parseSession(infoObj) }.getOrNull()?.let(::upsert)
             }
-            "session.deleted" -> p.obj("info")?.str("id")?.let { id -> all.update { it - id }; publish(); saveCache() }
+            "session.deleted" -> p.obj("info")?.str("id")?.let { id ->
+                all.update { it - id }
+                // The server may not send an idle event for a session deleted mid-run. Without this
+                // the status survives and the task pill keeps a ghost "Working" row.
+                statuses.update { it - id }
+                retries.update { it - id }
+                permissions.update { l -> l.filterNot { it.sessionID == id } }
+                questions.update { l -> l.filterNot { it.sessionID == id } }
+                saveBusy()
+                publish()
+                saveCache()
+            }
             "session.status" -> {
                 val id = p.str("sessionID") ?: return
                 val t = p.obj("status")?.str("type") ?: return

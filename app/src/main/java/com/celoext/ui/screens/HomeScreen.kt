@@ -45,6 +45,7 @@ import com.celoext.Graph
 import com.celoext.ui.Nav
 import com.celoext.ui.Route
 import com.celoext.ui.components.ComposerHost
+import com.celoext.ui.components.LiveTaskPill
 import com.celoext.ui.components.Ico
 import com.celoext.ui.components.IconBtn
 import com.celoext.ui.components.TopBar
@@ -158,6 +159,7 @@ fun HomeScreen(nav: Nav, onMenu: () -> Unit, code: Boolean = false) {
                 .graphicsLayer { alpha = 1f - prog.value * 1.4f; translationY = prog.value * 90f },
         ) {
             if (Oc.look.id.kimiLike && !ghost && !state.text.startsWith("/")) com.celoext.ui.components.KimiQuickChips(nav, code) { state.text = it }
+            LiveTaskPill(nav, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
             ComposerHost(
                 state = state, nav = nav, busy = sending, dashed = ghost,
                 placeholder = if (Oc.look.id.kimiLike) "Ask me. Give me a task." else if (code) "Describe a task…" else "Chat with OpenCode…",

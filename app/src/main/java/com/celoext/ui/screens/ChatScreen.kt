@@ -51,6 +51,7 @@ import com.celoext.api.str
 import com.celoext.data.ChatMessage
 import com.celoext.ui.Nav
 import com.celoext.ui.components.ComposerHost
+import com.celoext.ui.components.LiveTaskPill
 import com.celoext.ui.components.Ico
 import com.celoext.ui.components.IconBtn
 import com.celoext.ui.components.ImageViewer
@@ -293,6 +294,7 @@ fun ChatScreen(id: String, nav: Nav, onMenu: () -> Unit) {
         com.celoext.ui.components.InterruptedCard(id)
         if (myQuestion == null && myPerm == null) com.celoext.ui.components.PreviewChips(chat, id, nav)
         if (myQuestion == null && myPerm == null) com.celoext.ui.components.TeamStrip(id, nav)
+        LiveTaskPill(nav, excludeID = id, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         if (myQuestion != null || myPerm != null) Box(Modifier.navigationBarsPadding().padding(bottom = 8.dp)) {
             androidx.compose.animation.AnimatedContent(myQuestion?.id ?: myPerm?.id, label = "ask", transitionSpec = {
                 (androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(140)) + androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(160)) { it / 4 }) togetherWith

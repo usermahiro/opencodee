@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.celoext.Graph
 import com.celoext.runtime.RuntimeState
+import com.celoext.ui.components.LiveTaskPill
 import com.celoext.ui.components.Spinner
 import com.celoext.ui.components.Txt
 import com.celoext.ui.screens.CapabilitiesScreen
@@ -237,6 +238,15 @@ private fun Shell(rt: RuntimeState) {
             }
             val cur = nav.current
             if (cur == Route.Home || cur == Route.NewCode || cur == Route.Code || cur is Route.Chat) ServerBanner(rt)
+            // Home and Chat place the pill above their composer; everywhere else it floats by the bottom edge.
+            // Code, Preview and Connectors keep their primary action at the bottom end, so the pill sits above it.
+            if (cur != Route.Home && cur != Route.NewCode && cur !is Route.Chat) {
+                val lift = if (cur == Route.Code || cur == Route.Connectors || cur is Route.Preview) 84.dp else 16.dp
+                LiveTaskPill(
+                    nav,
+                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = lift),
+                )
+            }
         }
     }
     ConnectPrompt(nav)
