@@ -3,6 +3,7 @@ package com.celoext.runtime
 import com.celoext.data.Vault
 import android.app.Application
 import android.content.Intent
+import android.system.Os
 import androidx.core.content.ContextCompat
 import com.celoext.api.OpenCodeApi
 import com.celoext.data.Memory
@@ -45,6 +46,15 @@ class RuntimeController(
         val TERMUX_HOSTS = listOf(
             "https://packages.termux.dev/apt/termux-main",
             "https://packages-cf.termux.dev/apt/termux-main",
+        )
+        // Tools for the agent, run natively from app storage (no proot, no root).
+        // findutils/sed/coreutils: jadx's Gradle-style launcher pipes its JVM options through GNU xargs, sed and tr;
+        // Android's toybox xargs keeps the quotes and java then reads "-XX:..." as the main class.
+        val DEV_ROOTS = listOf("bash", "findutils", "sed", "coreutils", "git", "curl", "gh", "jadx", "rust", "ca-certificates")
+        // Termux housekeeping packages that only matter inside the Termux app itself.
+        val DEV_SKIP = setOf(
+            "termux-exec", "termux-tools", "termux-keyring", "termux-licenses", "termux-core",
+            "termux-am", "termux-am-socket", "apt", "dpkg", "command-not-found",
         )
         class Deb(val name: String, val path: String, val sha: String) {
             val urls get() = TERMUX_HOSTS.map { "$it/$path" }
@@ -201,24 +211,62 @@ class RuntimeController(
         // The Termux packages the bundle runs on. Nothing here is apt: pure downloads + unzip.
         val usrRoot = File(paths.nativeUsr, "data/data/com.termux/files/usr")
         paths.debMarkers.mkdirs()
+        // Latest build of every package, read once from the Termux index. If the index can't be
+        // reached the pinned files below are the fallback (and the other way round: a pin that
+        // 404s is replaced by whatever the index has).
+        var indexTried = false
+        var index: Map<String, TermuxIndex.Entry>? = null
+        fun currentIndex(): Map<String, TermuxIndex.Entry>? {
+            if (!indexTried) {
+                indexTried = true
+                index = runCatching { TermuxIndex.resolve(TERMUX_HOSTS, TERMUX_DEBS.map { it.name }.toSet()) }
+                    .onFailure { logLine("termux index unavailable, using pinned packages: ${it.message}") }
+                    .getOrNull()
+            }
+            return index
+        }
         for (deb in TERMUX_DEBS) {
             // A key file alone is not proof: an install killed mid-extraction leaves some files
             // behind, and the old check then called the package installed forever, so the missing
             // libraries were never restored and the server kept failing to start.
             val marker = File(paths.debMarkers, "${deb.name}.sha")
-            val markerVersion = runCatching { marker.readText().trim() }.getOrNull()
+            val markerRaw = runCatching { marker.readText().trim() }.getOrNull()
+            // "idx:<pinned sha>:<resolved sha>" means the pin was replaced by the index's file.
+            val markerVersion = if (markerRaw?.startsWith("idx:${deb.sha}:") == true) deb.sha else markerRaw
             val have = !debNeedsInstall(markerVersion, deb.sha, debKeyFilePresent(deb.name, usrRoot))
             if (have) { logLine("termux ${deb.name}: already installed"); continue }
-            step("Downloading ${deb.name}", 0f)
-            val f = File(paths.downloads, "${deb.name}-${deb.sha.take(8)}.deb")
-            Downloader.fetch(deb.urls, f, deb.sha) { d, t -> step("Downloading ${deb.name}", frac(d, t), mb(d, t)) }
-            step("Installing ${deb.name}", 0f)
-            val r = DebExtractor.extract(f, paths.nativeUsr) { d, t -> step("Installing ${deb.name}", frac(d, t)) }
-            // Written only after a complete unpack. A killed install leaves files but no marker, so
-            // the next run extracts the package again instead of trusting a half-written tree.
-            marker.writeText(deb.sha)
-            logLine("termux ${deb.name}: ${r.files} files")
-            f.delete()
+            // ripgrep and pcre2 only power the search tool; a missing one must not stop the setup.
+            val optional = deb.name == "ripgrep" || deb.name == "pcre2"
+            try {
+                step("Downloading ${deb.name}", 0f)
+                var f = File(paths.downloads, "${deb.name}-${deb.sha.take(8)}.deb")
+                var markerText = deb.sha
+                var done = false
+                val entry = currentIndex()?.get(deb.name)
+                if (entry != null) {
+                    val latest = File(paths.downloads, "${deb.name}-${entry.sha.take(8)}.deb")
+                    val ok = runCatching {
+                        Downloader.fetch(TERMUX_HOSTS.map { "$it/${entry.path}" }, latest, entry.sha) { d, t -> step("Downloading ${deb.name}", frac(d, t), mb(d, t)) }
+                    }.onFailure { logLine("termux ${deb.name}: latest failed (${it.message}), trying the pinned file") }.isSuccess
+                    if (ok) {
+                        f = latest
+                        markerText = "idx:${deb.sha}:${entry.sha}"
+                        logLine("termux ${deb.name}: latest ${entry.path.substringAfterLast('/')}")
+                        done = true
+                    }
+                }
+                if (!done) Downloader.fetch(deb.urls, f, deb.sha) { d, t -> step("Downloading ${deb.name}", frac(d, t), mb(d, t)) }
+                step("Installing ${deb.name}", 0f)
+                val r = DebExtractor.extract(f, paths.nativeUsr) { d, t -> step("Installing ${deb.name}", frac(d, t)) }
+                // Written only after a complete unpack. A killed install leaves files but no marker, so
+                // the next run extracts the package again instead of trusting a half-written tree.
+                marker.writeText(markerText)
+                logLine("termux ${deb.name}: ${r.files} files")
+                f.delete()
+            } catch (e: Exception) {
+                if (!optional) throw e
+                logLine("termux ${deb.name}: skipped (${e.message})")
+            }
         }
         if (!File(usrRoot, "bin/bun").isFile) error("bun did not land in the Termux layout; install failed")
         paths.tmp.mkdirs()
@@ -276,14 +324,15 @@ class RuntimeController(
     /** One file that has to exist once a Termux package is unpacked; the marker proves it is complete. */
     private fun debKeyFilePresent(name: String, usrRoot: File): Boolean = when (name) {
         "bun" -> File(usrRoot, "bin/bun").isFile
-        "libicu" -> File(usrRoot, "lib/libicuuc.so.79.1").isFile
+        "libicu" -> File(usrRoot, "lib").listFiles()?.any { it.name.startsWith("libicuuc.so.") } == true
         "ripgrep" -> File(usrRoot, "bin/rg").isFile
         "pcre2" -> File(usrRoot, "lib/libpcre2-8.so").isFile
         else -> false
     }
 
     /** The environment the native server runs with: XDG paths all live in the native home. */
-    private fun nativeEnv(): Map<String, String> = mapOf(
+    private fun nativeEnv(): Map<String, String> {
+        val base = mapOf(
         "HOME" to paths.nativeHome.path,
         "XDG_CONFIG_HOME" to File(paths.nativeHome, ".config").path,
         "XDG_DATA_HOME" to File(paths.nativeHome, ".local/share").path,
@@ -298,7 +347,23 @@ class RuntimeController(
         "OPENCODE_BUN" to File(paths.nativeBin, "bun").path,
         "OPENCODE_ROOT" to paths.opencodeBundle.path,
         "OPENCODE_DISABLE_AUTOUPDATE" to "true",
-    )
+        )
+        // Termux tools (git, curl, gh, cargo, jadx) were unpacked with their prefix relocated into this app.
+        val prefix = PrefixPatcher.targetPrefix(app.packageName) ?: return base
+        val usr = File(paths.nativeUsr, "data/data/com.termux/files/usr")
+        val cargoHome = File(paths.nativeHome, ".cargo")
+        val ca = "$prefix/etc/tls/cert.pem"
+        val jdk = File(usr, "lib/jvm").listFiles()?.firstOrNull { it.isDirectory }
+        return base + buildMap {
+            put("PREFIX", prefix)
+            put("SSL_CERT_FILE", ca)
+            put("CURL_CA_BUNDLE", ca)
+            put("GIT_SSL_CAINFO", ca)
+            put("CARGO_HOME", cargoHome.path)
+            put("PATH", "${cargoHome.path}/bin:${paths.nativeBin.path}:/system/bin:/system/xbin")
+            if (jdk != null) put("JAVA_HOME", "$prefix/lib/jvm/${jdk.name}")
+        }
+    }
 
     /** Runs a native binary directly (bun etc.): same guardrails as runGuest, no proot. */
     private suspend fun runNative(
@@ -603,10 +668,106 @@ class RuntimeController(
         p.exitValue()
     }
 
+    /**
+     * git, curl, gh, jadx and cargo from the Termux repo, unpacked straight into app storage and run
+     * natively: no proot, no root. The packages are resolved with their dependencies from the Termux
+     * index (no apt), and every file gets its /data/data/com.termux prefix swapped for a same-length
+     * path inside this app ([PrefixPatcher]); a symlink there leads to the real directory.
+     */
+    suspend fun installNativeDevTools(onLine: (String) -> Unit): Int = withContext(Dispatchers.IO) {
+        fun say(s: String) { logLine(s); onLine(s) }
+        try {
+            val prefix = PrefixPatcher.targetPrefix(app.packageName)
+                ?: error("The package name ${app.packageName} is too long to relocate Termux binaries")
+            val realUsr = File(paths.nativeUsr, "data/data/com.termux/files/usr")
+            realUsr.mkdirs()
+            val link = File(app.filesDir, prefix.substringAfterLast('/'))
+            if (runCatching { Os.readlink(link.path) }.getOrNull() != realUsr.path) {
+                link.delete()
+                Os.symlink(realUsr.path, link.path)
+            }
+            say("Reading the Termux package index")
+            val index = TermuxIndex.resolveAll(TERMUX_HOSTS)
+            val missing = DEV_ROOTS.filter { it !in index }
+            if (missing.isNotEmpty()) say("Not in the Termux repo: ${missing.joinToString()}")
+            val plan = TermuxIndex.closure(index, DEV_ROOTS, DEV_SKIP)
+            val from = PrefixPatcher.TERMUX_PREFIX.toByteArray(Charsets.ISO_8859_1)
+            val to = prefix.toByteArray(Charsets.ISO_8859_1)
+            paths.debMarkers.mkdirs()
+            for ((i, e) in plan.withIndex()) {
+                val marker = File(paths.debMarkers, "${e.name}.sha")
+                if (marker.isFile && marker.length() > 0) continue
+                say("[${i + 1}/${plan.size}] ${e.name}")
+                val f = File(paths.downloads, "${e.name}-${e.sha.take(8)}.deb")
+                Downloader.fetch(TERMUX_HOSTS.map { "$it/${e.path}" }, f, e.sha) { _, _ -> }
+                var patched = 0
+                DebExtractor.extract(f, paths.nativeUsr, onFile = { patched += PrefixPatcher.patchFile(it, from, to) })
+                // Written only after a complete unpack and patch: a killed install redoes this package.
+                marker.writeText("idx:${e.sha}")
+                f.delete()
+                logLine("termux ${e.name}: relocated $patched paths")
+            }
+            // Scripts start with #!<prefix>/bin/sh; Android's own sh stands in when no package provided one.
+            val sh = File(realUsr, "bin/sh")
+            if (!sh.exists() && !java.nio.file.Files.isSymbolicLink(sh.toPath())) {
+                sh.parentFile?.mkdirs()
+                Os.symlink("/system/bin/sh", sh.path)
+            }
+            say("Checking the tools")
+            var failed = 0
+            for (cmd in listOf("git", "curl", "gh", "cargo", "jadx")) {
+                if (!File(paths.nativeBin, cmd).exists()) { say("✗ $cmd is not installed"); failed++; continue }
+                var first = true
+                val code = runNative(listOf(File(paths.nativeBin, cmd).path, "--version"), timeoutSec = 90) { l ->
+                    if (first) { first = false; onLine(l) }
+                }
+                if (code != 0) { say("✗ $cmd --version exited with $code"); failed++ }
+            }
+            if (failed == 0) 0 else 1
+        } catch (e: Exception) {
+            say("✗ ${e.message ?: e.javaClass.simpleName}")
+            1
+        }
+    }
+
     /** git, ripgrep and the like: without them the agent in Ubuntu is nearly useless. */
     suspend fun installDevTools(onLine: (String) -> Unit): Int {
-        val script = "apt-get update && apt-get install -y --no-install-recommends git ripgrep curl ca-certificates openssh-client unzip less nano python3 build-essential"
-        return runGuest(listOf("/bin/bash", "-lc", script), onLine = onLine)
+        // git, curl and the build tools come from Ubuntu; gh, jadx and Rust come straight from
+        // their own latest releases (Ubuntu's copies are a year or more behind).
+        val script = """
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends git ripgrep curl ca-certificates gnupg openssh-client unzip less nano python3 build-essential default-jre-headless
+
+            echo "== gh =="
+            install -d -m 755 /etc/apt/keyrings
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+            chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=${'$'}(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+            apt-get update
+            apt-get install -y gh
+
+            echo "== jadx =="
+            JADX_URL=${'$'}(curl -fsSL https://api.github.com/repos/skylot/jadx/releases/latest | grep -o 'https://[^"]*/jadx-[0-9][^"]*[.]zip' | head -1)
+            [ -n "${'$'}JADX_URL" ]
+            curl -fsSL "${'$'}JADX_URL" -o /tmp/jadx.zip
+            rm -rf /opt/jadx
+            mkdir -p /opt/jadx
+            unzip -q -o /tmp/jadx.zip -d /opt/jadx
+            rm -f /tmp/jadx.zip
+            ln -sf /opt/jadx/bin/jadx /usr/local/bin/jadx
+
+            echo "== rust / cargo =="
+            if [ ! -x /root/.cargo/bin/rustup ]; then
+              curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            else
+              /root/.cargo/bin/rustup update stable
+            fi
+            for t in cargo rustc rustup; do ln -sf /root/.cargo/bin/${'$'}t /usr/local/bin/${'$'}t; done
+            cargo --version
+        """.trimIndent()
+        return runGuest(listOf("/bin/bash", "-lc", script), timeoutSec = 3600, onLine = onLine)
     }
 
     /**

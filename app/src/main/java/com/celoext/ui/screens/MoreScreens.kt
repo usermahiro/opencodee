@@ -190,10 +190,10 @@ fun ServerScreen(nav: Nav) {
             Spacer(Modifier.height(16.dp))
             SettingsGroup {
                 SettingsRow("9Router server", subtitle = "AI gateway + dashboard inside this environment", icon = Ic.Router, chevron = true, onClick = { nav.push(com.celoext.ui.Route.NineRouter) })
-                SettingsRow("Install dev tools", subtitle = "git, ripgrep, curl, python3, build-essential", icon = Ic.Terminal, onClick = {
+                SettingsRow("Install dev tools", subtitle = "git, curl, gh, jadx, cargo: run natively, no proot or root", icon = Ic.Terminal, onClick = {
                     val lines = mutableStateListOf<String>(); tools = lines
                     scope.launch {
-                        val code = Graph.runtime.installDevTools { l -> scope.launch(Dispatchers.Main) { lines.add(l) } }
+                        val code = Graph.runtime.installNativeDevTools { l -> scope.launch(Dispatchers.Main) { lines.add(l) } }
                         lines.add(if (code == 0) "✓ Done" else "✗ Failed (exit $code)")
                     }
                 })
