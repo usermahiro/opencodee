@@ -32,6 +32,8 @@ object TarExtractor {
         onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
         /** Bytes consumed so far in the units of [total]; defaults to what was read from [input]. */
         consumed: (() -> Long)? = null,
+        /** Called with each regular file once it is written (the Termux relocation patches it here). */
+        onFile: ((File) -> Unit)? = null,
     ): Result {
         dest.mkdirs()
         val destCanon = dest.canonicalFile
@@ -110,6 +112,7 @@ object TarExtractor {
                         target.delete()
                         if (src.exists()) src.copyTo(target, overwrite = true)
                         Os.chmod(target.path, (mode and 0xFFF and 0x1FF) or 0x180)
+                        onFile?.invoke(target)
                         files++
                     }
                     '0', '\u0000', '7' -> {
@@ -126,6 +129,7 @@ object TarExtractor {
                         }
                         skip(gz, pad(size))
                         Os.chmod(target.path, (mode and 0x1FF) or 0x180)
+                        onFile?.invoke(target)
                         files++
                     }
                     else -> { skip(gz, size + pad(size)); skipped++ } // devices, fifo
