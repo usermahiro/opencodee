@@ -10,7 +10,12 @@ import java.io.InputStream
  */
 object DebExtractor {
 
-    fun extract(deb: File, dest: File, onProgress: (done: Long, total: Long) -> Unit = { _, _ -> }): TarExtractor.Result {
+    fun extract(
+        deb: File,
+        dest: File,
+        onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
+        onFile: ((File) -> Unit)? = null,
+    ): TarExtractor.Result {
         deb.inputStream().buffered(1 shl 16).use { input ->
             val magic = ByteArray(8)
             if (!readFully(input, magic) || String(magic) != "!<arch>\n") error("Not a .deb archive: ${deb.name}")
@@ -48,7 +53,7 @@ object DebExtractor {
                 else -> raw
             }
             // Progress is measured on the compressed member, the unit of the total passed here.
-            return TarExtractor.extract(tar, data.size.toLong(), dest, onProgress, consumed = { raw.count })
+            return TarExtractor.extract(tar, data.size.toLong(), dest, onProgress, consumed = { raw.count }, onFile = onFile)
         }
     }
 
