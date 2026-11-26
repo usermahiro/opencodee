@@ -13,8 +13,10 @@ object DebExtractor {
     fun extract(
         deb: File,
         dest: File,
-        onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
+        /** Called with each regular file once it is written (the Termux relocation patches it here). */
         onFile: ((File) -> Unit)? = null,
+        // Last on purpose: callers pass the progress callback as a trailing lambda.
+        onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
     ): TarExtractor.Result {
         deb.inputStream().buffered(1 shl 16).use { input ->
             val magic = ByteArray(8)
